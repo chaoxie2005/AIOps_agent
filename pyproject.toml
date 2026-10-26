@@ -1,0 +1,24 @@
+[project]
+name = "aiops-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "chaoxie", email = "3320841884@qq.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=1.4.7",
+    "langchain-core>=1.7.0",
+    "langgraph>=1.2.17",
+    "pymilvus>=3.0.2",
+    "pytest>=9.1.1",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+aiops-agent = "aiops_agent:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
