@@ -4,6 +4,7 @@ from datetime import datetime
 from operator import add
 from typing import Annotated, Any, Literal
 
+from langchain_core.documents import Document
 from typing_extensions import Required, TypedDict
 
 
@@ -64,8 +65,7 @@ class RetrievalHit(TypedDict):
     """某个子查询召回的一篇文档。"""
 
     subquery: str  # 触发召回的子查询
-    document: KnowledgeDocument  # 召回的文档
-    retrieval_score: float | None  # 初次检索相关性分数
+    document: Document  # 原始检索文档，检索器输出分数保存在 metadata["score"]
 
 
 class ToolCallRecord(TypedDict):
@@ -110,15 +110,21 @@ class OverviewState(TypedDict, total=False):
     max_steps: int  # 本次诊断允许执行的步骤上限
 
 
+class RagInput(TypedDict, total=False):
+    """RAG 子图输入；包含要检索的问题和子问题列表。"""
+
+    query: Required[str]  # 本次 RAG 检索要解决的问题
+    unique_subqueries: list[str]  # 去重后用于检索的子问题列表
+    max_subqueries: int  # 允许生成的子查询上限数量
+
 class RagState(TypedDict, total=False):
     """RAG 子图状态；检索结果可以由并行节点追加。"""
 
     query: Required[str]  # 本次 RAG 检索要解决的问题
-    subqueries: list[str]  # 拆解后的子问题列表
     unique_subqueries: list[str]  # 去重后用于检索的子问题列表
     retrieval_hits: Annotated[list[RetrievalHit], add]  # 并行检索的原始召回结果
-    unique_documents: list[KnowledgeDocument]  # 聚合去重后的文档列表
-    selected_documents: list[KnowledgeDocument]  # 重排筛选后的最终文档 超过max_rag_window_tokens就需进行二次重排筛选最相关或者进行压缩
+    unique_documents: list[RetrievalHit]  # 聚合去重后的文档列表 只要文档内容
+    selected_documents: list[Document]  # 重排筛选后的最终文档 超过max_rag_window_tokens就需进行二次重排筛选最相关或者进行压缩 只要文档内容
     max_subqueries: int  # 允许生成的子查询上限数量
     max_rag_window_tokens: int  # 最终文档内容的 token 预算 不能超过该值
     # max_rerank_documents: int  # 最终重排保留的文档数量上限 不能超过该值 先固定为topk3 后续在动态

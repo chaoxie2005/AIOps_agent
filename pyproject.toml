@@ -9,11 +9,19 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "langchain>=1.4.7",
+    "langchain-community>=0.4.2",
     "langchain-core>=1.7.0",
+    "langchain-experimental>=0.4.2",
+    "langchain-openai>=1.7.3",
+    "langchain-text-splitters>=1.1.2",
     "langgraph>=1.2.17",
+    "logger>=1.4",
+    "minio>=7.2.20",
     "pymilvus>=3.0.2",
+    "pypdf>=6.19.0",
     "pytest>=9.1.1",
     "python-dotenv>=1.2.4",
+    "requests>=2.34.2",
 ]
 
 [project.scripts]
