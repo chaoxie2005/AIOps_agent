@@ -123,12 +123,12 @@ class RagState(TypedDict, total=False):
     query: Required[str]  # 本次 RAG 检索要解决的问题
     unique_subqueries: list[str]  # 去重后用于检索的子问题列表
     retrieval_hits: Annotated[list[RetrievalHit], add]  # 并行检索的原始召回结果
-    unique_documents: list[RetrievalHit]  # 聚合去重后的文档列表 只要文档内容
-    selected_documents: list[Document]  # 重排筛选后的最终文档 超过max_rag_window_tokens就需进行二次重排筛选最相关或者进行压缩 只要文档内容
+    unique_documents: list[str]  # 聚合去重后的父文档内容列表
     max_subqueries: int  # 允许生成的子查询上限数量
-    max_rag_window_tokens: int  # 最终文档内容的 token 预算 不能超过该值
-    # max_rerank_documents: int  # 最终重排保留的文档数量上限 不能超过该值 先固定为topk3 后续在动态
 
+class RagOutput(TypedDict, total=False):
+    """RAG 子图输出；包含检索结果和重排结果。"""
+    unique_documents: list[str]  # 聚合去重后的父文档内容列表
 
 class ExecutorPrivateState(TypedDict, total=False):
     """执行单个计划步骤时使用的私有状态。"""
