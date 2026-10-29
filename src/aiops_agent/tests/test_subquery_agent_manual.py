@@ -2,7 +2,7 @@
 import asyncio
 
 from aiops_agent.agent_components.llm import ModelClient
-from aiops_agent.graph_components.nodes.subquery_agent import subquery_agent
+from aiops_agent.graph_components.nodes.subquery_agent import subquery_agent_node
 from aiops_agent.graph_components.states.state import RagState
 
 
@@ -18,7 +18,7 @@ async def main() -> None:
         "query": "CPU突然异常高，导致系统响应缓慢",
         "max_subqueries": 3,
     }
-    result = await subquery_agent(state, model)
+    result = await subquery_agent_node(state, model)
     print(result)
 
 
