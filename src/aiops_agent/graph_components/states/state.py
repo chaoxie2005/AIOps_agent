@@ -155,8 +155,9 @@ class ExecutorState(ExecutorInput, ExecutorPrivateState, total=False):
 
 
 class ExecutorOutput(TypedDict, total=False):
-    """执行子图输出，只返回步骤结果和工具调用记录。"""
+    """执行子图输出，返回步骤结果、工具调用记录和现场证据。"""
 
     step_result: StepResult | None
     tool_calls: list[ToolCallRecord]
     tool_results: list[ToolResultRecord]
+    evidence_candidates: list[Evidence]

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import ToolCallLimitMiddleware, wrap_tool_call
@@ -9,8 +10,49 @@ from loguru import logger
 from aiops_agent.agent_components.llm import ModelClient
 from aiops_agent.agent_components.toolkits.query_metrics import query_metrics
 from aiops_agent.agent_components.toolkits.rag_search import make_rag_search_tool
-from aiops_agent.graph_components.states.state import ExecutorInput, ExecutorPrivateState
+from aiops_agent.graph_components.states.state import (
+    Evidence, ExecutorInput, ExecutorPrivateState, ToolCallRecord, ToolResultRecord,
+)
 from aiops_agent.prompts.load_texts.load_execute_prompt import execute_agent_prompt
+
+
+def _collect_metric_evidence(
+    step_id: str, calls: list[ToolCallRecord], results: list[ToolResultRecord],
+) -> list[Evidence]:
+    """从成功的监控返回提取证据；时间和观察均取自实际样本。"""
+    calls_by_id = {call["id"]: call for call in calls}
+    evidence = {}
+    for result in results:
+        call = calls_by_id.get(result["tool_call_id"])
+        if not result["success"] or call is None or call["tool_name"] != "query_metrics":
+            continue
+        try:
+            data = json.loads(result["summary"])
+            values = data["result"]
+            if data["resultType"] == "vector":
+                samples = [item["value"] for item in values]
+            elif data["resultType"] == "matrix":
+                samples = [sample for item in values for sample in item["values"]]
+            elif data["resultType"] in ("scalar", "string"):
+                samples = [values] if values else []
+            else:
+                continue
+            if not samples:
+                continue
+            times = [datetime.fromtimestamp(float(sample[0]), timezone.utc) for sample in samples]
+            evidence_id = f"{step_id}:{call['id']}"
+            evidence[evidence_id] = {
+                "id": evidence_id,
+                "step_id": step_id,
+                "source": "prometheus",
+                "query": call["arguments"]["query"],
+                "time_range": {"start": min(times), "end": max(times)},
+                "observation": "Prometheus 实际返回：" + json.dumps(data, ensure_ascii=False),
+                "raw_result_ref": None,
+            }
+        except (ValueError, TypeError, KeyError, IndexError, OverflowError, OSError) as exc:
+            logger.warning("工具调用 {} 的返回无法生成监控证据: {}", call["id"], exc)
+    return list(evidence.values())
 
 
 async def prepare_step(state: ExecutorInput, max_tool_calls: int = 3) -> dict:
@@ -40,7 +82,7 @@ async def execute_node(state: ExecutorPrivateState, model_client: ModelClient, r
         rag_tool: 使用 make_rag_search_tool 创建并绑定检索器的 RAG 工具。
 
     Returns:
-        包含 tool_calls、tool_results 和 step_result 的状态更新。
+        包含 tool_calls、tool_results、evidence_candidates 和 step_result 的状态更新。
         Agent 内部完成工具选择、执行和结束判断。
     """
     if state.get("step_result") is not None:
@@ -107,15 +149,18 @@ async def execute_node(state: ExecutorPrivateState, model_client: ModelClient, r
     else:
         logger.warning("步骤 {} 工具调用预算已耗尽", step_id)
 
+    evidence = {item["id"]: item for item in state.get("evidence_candidates", [])}
+    evidence.update({item["id"]: item for item in _collect_metric_evidence(step_id, calls, results)})
     logger.info("步骤 {} 执行结束，状态: {}，累计工具调用数: {}", step_id, decision["status"], len(calls))
     return {
         "tool_calls": calls, 
         "tool_results": results, 
+        "evidence_candidates": list(evidence.values()),
         "step_result": {
         "step_id": state["current_step"]["id"],
         "status": decision["status"],
         "summary": decision["summary"],
-        "evidence_ids": [item["id"] for item in state.get("evidence_candidates", [])],
+        "evidence_ids": list(evidence),
         "knowledge_document_ids": [item["id"] for item in state.get("knowledge_candidates", [])],
         "tool_call_ids": [call["id"] for call in calls],
         "error": decision["summary"] if decision["status"] == "failed" else None,
