@@ -14,7 +14,7 @@ async def execute_subgraph(state: ExecutorInput, nodes: ExecuteNodes | None = No
         nodes: 节点依赖容器；未传入时使用现有环境配置创建。
 
     Returns:
-        当前步骤的 step_result、tool_calls 和 tool_results。
+        当前步骤的 step_result、tool_calls、tool_results 和 evidence_candidates。
     """
     nodes = nodes or ExecuteNodes.from_env()
     builder = StateGraph(ExecutorState, input_schema=ExecutorInput, output_schema=ExecutorOutput)
