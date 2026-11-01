@@ -4,8 +4,10 @@
 RagNodes 只负责持有依赖并在图里转发，不承载业务逻辑。
 """
 import json
+import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from langchain_core.documents import Document
@@ -66,10 +68,20 @@ class RagNodes:
     def from_env(cls) -> "RagNodes":
         """按 .env 配置构造模型客户端与检索器。"""
         load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+        base_url = os.getenv("LLM_BASE_URL", "http://127.0.0.1:8002/v1").strip().rstrip("/")
+        address = urlsplit(base_url)
+        if address.scheme not in ("http", "https") or not address.hostname:
+            raise ValueError("LLM_BASE_URL 必须是包含 http 或 https 的模型服务地址")
+        # 仅让模型主机绕过代理，保留已有的代理绕过名单。
+        for key in ("NO_PROXY", "no_proxy"):
+            hosts = [host.strip() for host in os.getenv(key, "").split(",") if host.strip()]
+            if address.hostname not in hosts:
+                hosts.append(address.hostname)
+            os.environ[key] = ",".join(hosts)
         model_client = ModelClient(
             model_name="Qwen/Qwen3-0.6B",
             model_provider="openai",
-            base_url="http://127.0.0.1:8002/v1",
+            base_url=base_url,
             api_key="EMPTY",
             max_tokens=512,
         )

@@ -130,6 +130,14 @@ class RagOutput(TypedDict, total=False):
     """RAG 子图输出；包含检索结果和重排结果。"""
     unique_documents: list[str]  # 聚合去重后的父文档内容列表
 
+
+class ExecutorInput(TypedDict, total=False):
+    """执行子图输入；字段名与 OverviewState 对齐，父图直接传入。"""
+
+    steps: Required[list[PlanStep]]  # 当前有效的有序步骤表
+    current_step_id: Required[str]  # 本次要执行的步骤 ID
+
+
 class ExecutorPrivateState(TypedDict, total=False):
     """执行单个计划步骤时使用的私有状态。"""
 
@@ -140,3 +148,15 @@ class ExecutorPrivateState(TypedDict, total=False):
     knowledge_candidates: list[KnowledgeDocument]  # 本步骤检索到的排障知识
     step_result: StepResult | None  # 本步骤的最终执行结果
     max_tool_calls: int  # 本步骤允许的工具调用上限
+
+
+class ExecutorState(ExecutorInput, ExecutorPrivateState, total=False):
+    """执行子图内部状态，包含入口参数和节点执行期间使用的字段。"""
+
+
+class ExecutorOutput(TypedDict, total=False):
+    """执行子图输出，只返回步骤结果和工具调用记录。"""
+
+    step_result: StepResult | None
+    tool_calls: list[ToolCallRecord]
+    tool_results: list[ToolResultRecord]
