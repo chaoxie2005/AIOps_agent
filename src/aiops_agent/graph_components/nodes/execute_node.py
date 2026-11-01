@@ -81,8 +81,7 @@ async def execute_node(state: ExecutorPrivateState, model_client: ModelClient, r
             raise
         for message in output["messages"]:
             if isinstance(message, AIMessage):
-                calls.extend({"id": call["id"], "tool_name": call["name"], "arguments": call["args"]}
-                             for call in message.tool_calls)
+                calls.extend({"id": call["id"], "tool_name": call["name"], "arguments": call["args"]}  for call in message.tool_calls)
             elif isinstance(message, ToolMessage):
                 logger.info("步骤 {} 收到工具结果，调用 ID: {}，状态: {}", step_id, message.tool_call_id, message.status)
                 content = message.content if isinstance(message.content, str) else json.dumps(message.content, ensure_ascii=False)
@@ -109,7 +108,10 @@ async def execute_node(state: ExecutorPrivateState, model_client: ModelClient, r
         logger.warning("步骤 {} 工具调用预算已耗尽", step_id)
 
     logger.info("步骤 {} 执行结束，状态: {}，累计工具调用数: {}", step_id, decision["status"], len(calls))
-    return {"tool_calls": calls, "tool_results": results, "step_result": {
+    return {
+        "tool_calls": calls, 
+        "tool_results": results, 
+        "step_result": {
         "step_id": state["current_step"]["id"],
         "status": decision["status"],
         "summary": decision["summary"],

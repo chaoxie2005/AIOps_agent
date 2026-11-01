@@ -17,7 +17,7 @@ async def plan_node(state: OverviewState, model_client: ModelClient):
         knowledge_documents=state.get("knowledge_documents", []),
         existing_plan=state.get("steps", []),
         step_results=step_results,
-        remaining_steps=state.get("max_steps", 5) - len(step_results),
+        remaining_steps=state.get("max_steps", 8) - len(step_results),
     )
     # 调用模型，生成诊断流程
     plans = await model_client.ainvoke(plan_prompt)
