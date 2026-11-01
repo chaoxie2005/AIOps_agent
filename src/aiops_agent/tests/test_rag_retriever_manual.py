@@ -1,7 +1,6 @@
 """rag检索tool节点集成测试：.venv/bin/python -m pytest src/aiops_agent/tests/test_rag_retriever_manual.py。"""
 import asyncio
 from pathlib import Path
-
 from dotenv import load_dotenv
 
 from aiops_agent.graph_components.nodes.rag_nodes import retriever_node
