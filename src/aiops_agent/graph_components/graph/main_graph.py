@@ -1,6 +1,10 @@
-"""串联知识检索、规划、单步执行与重新规划的主图。"""
+"""根据用户意图选择普通聊天或故障排查的主图。"""
 
 from langgraph.graph import END, START, StateGraph
+
+from aiops_agent.agent_components.llm import ModelClient
+from aiops_agent.graph_components.nodes.chat_node import chat_node, intent_node
+from aiops_agent.graph_components.router.intent_router import intent_router
 
 from aiops_agent.agent_components.toolkits.rag_search import make_rag_search_tool
 from aiops_agent.graph_components.graph.rag_subgraph import rag_subgraph
@@ -23,7 +27,7 @@ class MainGraph:
         Args:
             query: 用户提出的故障问题。
             max_steps: 允许执行的步骤上限，零表示直接进入诊断收尾。
-            rag_nodes: 已初始化的依赖；未提供时通过现有环境配置创建。
+            rag_nodes: 已初始化的排障依赖；未提供时在进入排障分支后创建。
 
         Raises:
             ValueError: max_steps 不是非负整数。
@@ -32,16 +36,19 @@ class MainGraph:
             raise ValueError("max_steps 必须为非负整数")
         self.query = query
         self.max_steps = max_steps
-        self.rag_nodes = rag_nodes or RagNodes.from_env()
-        self.execute_nodes = ExecuteNodes(
-            self.rag_nodes.model_client, make_rag_search_tool(self.rag_nodes.retriever),
-        )
+        self.rag_nodes = rag_nodes
+        self.model_client = rag_nodes.model_client if rag_nodes is not None else ModelClient()
+        self.execute_nodes = None
         self.builder = StateGraph(OverviewState, output_schema=OverviewOutput)
         self.builder.add_node("rag", self._rag) # 检索知识并转换为主图文档
         self.builder.add_node("plan", self._plan) 
         self.builder.add_node("execute_step", self._execute_step)
         self.builder.add_node("replan", self._replan)
-        self.builder.add_edge(START, "rag")
+        self.builder.add_node("intent", self._intent)
+        self.builder.add_node("chat", self._chat)
+        self.builder.add_edge(START, "intent")
+        self.builder.add_conditional_edges("intent", intent_router, {"chat": "chat", "rag": "rag"})
+        self.builder.add_edge("chat", END)
         self.builder.add_edge("rag", "plan")
         self.builder.add_conditional_edges("plan", plan_router, {
             "execute_step": "execute_step", "replan": "replan",
@@ -52,6 +59,32 @@ class MainGraph:
         })
         self.graph = self.builder.compile()
 
+    async def _intent(self, state: OverviewState) -> dict:
+        """调用意图识别节点。
+
+        Args:
+            state: 包含用户问题的主状态。
+
+        Returns:
+            经过校验的意图状态更新。
+        """
+        return await intent_node(state, self.model_client)
+
+    async def _chat(self, state: OverviewState) -> dict:
+        """调用普通聊天节点。
+
+        Args:
+            state: 包含用户问题的主状态。
+
+        Returns:
+            普通聊天回答的状态更新。
+        """
+        if self.rag_nodes is None:
+            self.rag_nodes = RagNodes.from_env()
+            self.rag_nodes.model_client = self.model_client
+        rag_tool = make_rag_search_tool(self.rag_nodes.retriever)
+        return await chat_node(state, self.model_client, rag_tool)
+
     async def _rag(self, state: OverviewState) -> dict:
         """检索知识并转换为主图文档。
 
@@ -61,6 +94,9 @@ class MainGraph:
         Returns:
             本轮检索得到的知识文档状态更新。
         """
+        if self.rag_nodes is None:
+            self.rag_nodes = RagNodes.from_env()
+            self.rag_nodes.model_client = self.model_client
         output = await rag_subgraph(state["query"], nodes=self.rag_nodes)
         return {"knowledge_documents": [
             {
@@ -79,7 +115,7 @@ class MainGraph:
         Returns:
             初始诊断步骤的状态更新。
         """
-        return await plan_node(state, self.rag_nodes.model_client)
+        return await plan_node(state, self.model_client)
 
     async def _execute_step(self, state: OverviewState) -> dict:
         """调用单步执行包装节点。
@@ -90,6 +126,10 @@ class MainGraph:
         Returns:
             步骤状态以及本步新增的执行结果和证据。
         """
+        if self.execute_nodes is None:
+            self.execute_nodes = ExecuteNodes(
+                self.model_client, make_rag_search_tool(self.rag_nodes.retriever),
+            )
         return await execute_step_node(state, self.execute_nodes)
 
     async def _replan(self, state: OverviewState) -> dict:
@@ -101,13 +141,13 @@ class MainGraph:
         Returns:
             后续计划或最终诊断结果的状态更新。
         """
-        return await replan_node(state, self.rag_nodes.model_client)
+        return await replan_node(state, self.model_client)
 
     async def ainvoke(self) -> OverviewOutput:
         """使用独立初始状态运行本次诊断。
 
         Returns:
-            仅包含 result 字段的对外输出，字段值为最终结构化诊断结果。
+            包含 intent、reply 和 result 的对外输出。
         """
         state: OverviewState = {
             "query": self.query, 
@@ -118,6 +158,8 @@ class MainGraph:
             "evidence": [], 
             "knowledge_documents": [], 
             "result": None,
+            "intent": None,
+            "reply": None,
         }
         return await self.graph.ainvoke(
             state,

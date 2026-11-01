@@ -10,7 +10,7 @@ from typing_extensions import Required, TypedDict
 
 StepStatus = Literal["pending", "running", "completed", "failed", "skipped"]
 EvidenceSource = Literal["prometheus", "cls"]
-
+Intent = Literal["chat", "aiops"]
 
 class TimeRange(TypedDict):
     """查询覆盖的时间范围；时间应带时区。"""
@@ -98,9 +98,11 @@ class DiagnosisResult(TypedDict):
 
 
 class OverviewOutput(TypedDict):
-    """主图对外输出，仅包含最终诊断结果。"""
+    """主图对外输出，包含处理意图、聊天回答或诊断结果。"""
 
-    result: DiagnosisResult  # 返回给调用方的结构化诊断结果
+    intent: Intent  # 本轮处理意图
+    reply: str | None  # 普通聊天回复；排障分支为 None
+    result: DiagnosisResult | None  # 排障结果；聊天分支为 None
 
 
 class OverviewState(TypedDict, total=False):
@@ -114,7 +116,8 @@ class OverviewState(TypedDict, total=False):
     knowledge_documents: Annotated[list[KnowledgeDocument], add]  # RAG 提供的排障知识 RAG检索结果
     result: DiagnosisResult | None  # 最终结构化诊断结果
     max_steps: int  # 本次诊断允许执行的步骤上限
-
+    intent: Intent | None  # 用户问题的意图分类；由意图识别节点写入
+    reply: str | None  # 普通聊天节点生成的回答
 
 class RagInput(TypedDict, total=False):
     """RAG 子图输入；包含要检索的问题和子问题列表。"""

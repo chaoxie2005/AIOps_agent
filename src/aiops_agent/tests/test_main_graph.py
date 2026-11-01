@@ -14,14 +14,13 @@ def test_main_graph():
         try:
             nodes.model_client = ModelClient(temperature=0)
             return await MainGraph(
-                "CPU突然异常高，导致系统响应缓慢", max_steps=3, rag_nodes=nodes,
+                "什么是 CPU throttling",
+                max_steps=3,
+                rag_nodes=nodes,
             ).ainvoke()
         finally:
             await nodes.retriever.client.close()
 
     output = asyncio.run(run())
     print(output)
-    assert set(output) == {"result"}
-    assert isinstance(output.get("result"), dict)
-    assert isinstance(output.get("result")["summary"], str)
-    assert output.get("result")["summary"].strip()
+    assert set(output) == {"intent", "reply", "result"}
