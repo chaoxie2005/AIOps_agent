@@ -1,3 +1,5 @@
+"""测试提示词加载功能。"""
+
 from aiops_agent.utils.prompt_loader import load_prompt
 
 
