@@ -11,7 +11,7 @@ load_dotenv()
 
 
 # 节点：处理单个子问题
-async def retriever(payload: dict):
+async def retriever_node(payload: dict):
     retriever = build_retriever_from_env(
         milvus_url="http://localhost:19530",
         collection_name="camel_agent",

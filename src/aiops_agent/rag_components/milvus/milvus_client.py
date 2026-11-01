@@ -14,7 +14,7 @@ from pymilvus import (
 from pymilvus.client.abstract import BaseRanker
 from pymilvus.milvus_client.index import IndexParams
 
-from logger import logger
+from loguru import logger
 
 
 def _build_schema_and_index(
