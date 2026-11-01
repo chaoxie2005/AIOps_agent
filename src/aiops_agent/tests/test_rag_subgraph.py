@@ -1,3 +1,4 @@
+"""RAG 子图测试"""
 import asyncio
 
 from aiops_agent.graph_components.graph.rag_subgraph import rag_subgraph

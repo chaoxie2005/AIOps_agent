@@ -3,7 +3,7 @@ import asyncio
 
 from langchain_core.documents import Document
 
-from aiops_agent.graph_components.nodes.aggregation_node import aggregation_node
+from aiops_agent.graph_components.nodes.rag_nodes import aggregation_node
 from aiops_agent.graph_components.states.state import RagState
 
 

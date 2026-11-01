@@ -2,7 +2,7 @@
 import asyncio
 
 from aiops_agent.agent_components.llm import ModelClient
-from aiops_agent.graph_components.nodes.subquery_agent import subquery_agent_node
+from aiops_agent.graph_components.nodes.rag_nodes import subquery_node
 from aiops_agent.graph_components.states.state import RagState
 
 
@@ -19,7 +19,7 @@ def test_subquery_agent_node():
         "query": "CPU突然异常高，导致系统响应缓慢",
         "max_subqueries": 3,
     }
-    result = asyncio.run(subquery_agent_node(state, model))
+    result = asyncio.run(subquery_node(state, model))
     assert "unique_subqueries" in result
     assert len(result["unique_subqueries"]) > 0
     assert len(result["unique_subqueries"]) <= 3
