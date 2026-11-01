@@ -1,13 +1,27 @@
-"""手动调试聚合去重rag检索节点脚本：在项目根目录运行 $env:PYTHONPATH="src"; python -m aiops_agent.tests.test_aggregation_node_manual。"""
+"""聚合去重rag检索节点测试：.venv/bin/python -m pytest src/aiops_agent/tests/test_aggregation_node_manual.py。"""
 import asyncio
 
 from langchain_core.documents import Document
 
-from aiops_agent.graph_components.nodes.aggregation_node import aggregation_node
+from aiops_agent.graph_components.nodes.rag_nodes import aggregation_node
 from aiops_agent.graph_components.states.state import RagState
 
 
 def make_doc(content: str, parent_id: str, child_id: str, score: float, page: int = 1) -> Document:
+    """
+    构造一个 Document 对象，模拟检索结果。
+    
+    Args:
+        content (str): 文档内容。
+        parent_id (str): 父文档的唯一标识符。
+        child_id (str): 子文档的唯一标识符。
+        score (float): 文档的检索分数。
+        page (int, optional): 文档所属的页面码。默认值为 1。
+    
+    Returns:
+        Document: 构造的 Document 对象，包含内容和元数据。
+        
+    """
     return Document(
         page_content=content,
         metadata={
@@ -23,7 +37,8 @@ def make_doc(content: str, parent_id: str, child_id: str, score: float, page: in
     )
 
 
-async def main() -> None:
+def test_aggregation_node_deduplicates_by_parent_id():
+    """同一 parent_id 的多个子块只保留一份父文档内容。"""
     state: RagState = {
         "query": "CPU突然异常高，导致系统响应缓慢",
         "retrieval_hits": [
@@ -59,11 +74,6 @@ async def main() -> None:
             },
         ],
     }
-    result = await aggregation_node(state)
-    print("return:", result)
-    print("unique_documents:", result["unique_documents"])
+    result = asyncio.run(aggregation_node(state))
     assert len(result["unique_documents"]) == 2
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    assert "内存泄漏会导致 GC 频繁，CPU 同步升高。" in result["unique_documents"]
