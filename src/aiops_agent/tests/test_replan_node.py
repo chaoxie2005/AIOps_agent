@@ -8,14 +8,7 @@ from aiops_agent.graph_components.states.state import OverviewState
 
 
 def test_replan_node():
-    model_client = ModelClient(
-        model_name="Qwen/Qwen3-0.6B",
-        model_provider="openai",
-        base_url="http://127.0.0.1:8002/v1",
-        api_key="EMPTY",
-        max_tokens=2048,
-        temperature=0,
-    )
+    model_client = ModelClient(temperature=0)
     state: OverviewState = {
         "query": "CPU突然异常高，导致系统响应缓慢",
         "steps": [

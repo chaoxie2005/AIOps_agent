@@ -13,7 +13,7 @@ async def execute_step_node(state: OverviewState, nodes: ExecuteNodes | None = N
     if step is None:
         raise ValueError("没有待执行的步骤")
     output = await execute_subgraph(
-        {"steps": state["steps"], "current_step_id": step["id"]}, nodes=nodes,
+        {"steps": state.get("steps", []), "current_step_id": step["id"]}, nodes=nodes,
     )
     step_result = output.get("step_result")
     if step_result is None:
@@ -21,7 +21,7 @@ async def execute_step_node(state: OverviewState, nodes: ExecuteNodes | None = N
     return {
         "steps": [
             {**item, "status": step_result["status"]} if item["id"] == step["id"] else item
-            for item in state["steps"]
+            for item in state.get("steps", [])
         ],
         "current_step_id": None,
         "step_results": [step_result],

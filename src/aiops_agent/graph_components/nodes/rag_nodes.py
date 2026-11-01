@@ -68,7 +68,7 @@ class RagNodes:
     def from_env(cls) -> "RagNodes":
         """按 .env 配置构造模型客户端与检索器。"""
         load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-        base_url = os.getenv("LLM_BASE_URL", "http://127.0.0.1:8002/v1").strip().rstrip("/")
+        base_url = os.getenv("LLM_BASE_URL", "").strip().rstrip("/")
         address = urlsplit(base_url)
         if address.scheme not in ("http", "https") or not address.hostname:
             raise ValueError("LLM_BASE_URL 必须是包含 http 或 https 的模型服务地址")
@@ -78,13 +78,7 @@ class RagNodes:
             if address.hostname not in hosts:
                 hosts.append(address.hostname)
             os.environ[key] = ",".join(hosts)
-        model_client = ModelClient(
-            model_name="Qwen/Qwen3-0.6B",
-            model_provider="openai",
-            base_url=base_url,
-            api_key="EMPTY",
-            max_tokens=512,
-        )
+        model_client = ModelClient()
         retriever = build_retriever_from_env(
             milvus_url="http://localhost:19530",
             collection_name="camel_agent",

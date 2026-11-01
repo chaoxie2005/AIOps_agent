@@ -8,13 +8,7 @@ from aiops_agent.agent_components.llm import ModelClient
 
 
 def test_plan_node():
-    model_client = ModelClient(
-        model_name="Qwen/Qwen3-0.6B",
-        model_provider="openai",
-        base_url="http://127.0.0.1:8002/v1",
-        api_key="EMPTY",
-        max_tokens=512,
-    )
+    model_client = ModelClient()
     state: OverviewState = {
         "knowledge_documents": [],
         "query": "CPU突然异常高，导致系统响应缓慢",
