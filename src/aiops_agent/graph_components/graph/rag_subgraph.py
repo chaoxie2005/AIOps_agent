@@ -41,10 +41,3 @@ async def rag_subgraph(query: str):
     rag_agent = builder.compile()
     return await rag_agent.ainvoke({"query": query})
 
-
-async def main():
-    result = await rag_subgraph("数据库故障怎么办")
-    print(result)
-
-if __name__ == "__main__":
-    asyncio.run(main())
