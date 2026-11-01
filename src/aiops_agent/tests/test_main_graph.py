@@ -8,7 +8,7 @@ from aiops_agent.graph_components.nodes.rag_nodes import RagNodes
 
 
 def test_main_graph():
-    """运行完整排障主图，验证诊断输出及步骤预算。"""
+    """运行完整排障主图，验证对外诊断输出。"""
     async def run():
         nodes = RagNodes.from_env()
         try:
@@ -21,8 +21,7 @@ def test_main_graph():
 
     output = asyncio.run(run())
     print(output)
+    assert set(output) == {"result"}
     assert isinstance(output.get("result"), dict)
     assert isinstance(output.get("result")["summary"], str)
     assert output.get("result")["summary"].strip()
-    assert output.get("steps") == []
-    assert len(output.get("step_results")) <= output.get("max_steps") == 3

@@ -97,6 +97,12 @@ class DiagnosisResult(TypedDict):
     limitations: list[str]  # 结论中的不确定性与证据缺口
 
 
+class OverviewOutput(TypedDict):
+    """主图对外输出，仅包含最终诊断结果。"""
+
+    result: DiagnosisResult  # 返回给调用方的结构化诊断结果
+
+
 class OverviewState(TypedDict, total=False):
     """主图共享状态；除 query 外，其余字段由节点逐步写入。"""
 

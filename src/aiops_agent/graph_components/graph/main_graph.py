@@ -11,7 +11,7 @@ from aiops_agent.graph_components.nodes.rag_nodes import RagNodes
 from aiops_agent.graph_components.nodes.replan_node import replan_node
 from aiops_agent.graph_components.router.plan_router import plan_router
 from aiops_agent.graph_components.router.replan_router import replan_router
-from aiops_agent.graph_components.states.state import OverviewState
+from aiops_agent.graph_components.states.state import OverviewOutput, OverviewState
 
 
 class MainGraph:
@@ -36,7 +36,7 @@ class MainGraph:
         self.execute_nodes = ExecuteNodes(
             self.rag_nodes.model_client, make_rag_search_tool(self.rag_nodes.retriever),
         )
-        self.builder = StateGraph(OverviewState)
+        self.builder = StateGraph(OverviewState, output_schema=OverviewOutput)
         self.builder.add_node("rag", self._rag) # 检索知识并转换为主图文档
         self.builder.add_node("plan", self._plan) 
         self.builder.add_node("execute_step", self._execute_step)
@@ -103,11 +103,11 @@ class MainGraph:
         """
         return await replan_node(state, self.rag_nodes.model_client)
 
-    async def ainvoke(self) -> OverviewState:
+    async def ainvoke(self) -> OverviewOutput:
         """使用独立初始状态运行本次诊断。
 
         Returns:
-            包含诊断结果、步骤历史、知识文档和现场证据的主状态。
+            仅包含 result 字段的对外输出，字段值为最终结构化诊断结果。
         """
         state: OverviewState = {
             "query": self.query, 
