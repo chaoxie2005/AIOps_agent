@@ -105,6 +105,13 @@ class OverviewOutput(TypedDict):
     result: DiagnosisResult | None  # 排障结果；聊天分支为 None
 
 
+class ChatTurn(OverviewOutput):
+    """已完成并保存在 checkpoint 中的一轮问答。"""
+
+    query: str
+    created_at: datetime
+
+
 class OverviewState(TypedDict, total=False):
     """主图共享状态；除 query 外，其余字段由节点逐步写入。"""
 
@@ -118,6 +125,7 @@ class OverviewState(TypedDict, total=False):
     max_steps: int  # 本次诊断允许执行的步骤上限
     intent: Intent | None  # 用户问题的意图分类；由意图识别节点写入
     reply: str | None  # 普通聊天节点生成的回答
+    turns: Annotated[list[ChatTurn], add]  # 只追加已完成的会话轮次
 
 class RagInput(TypedDict, total=False):
     """RAG 子图输入；包含要检索的问题和子问题列表。"""
