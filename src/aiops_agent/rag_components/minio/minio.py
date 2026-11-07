@@ -1,7 +1,11 @@
+import json
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
 
 from minio import Minio
+from minio.commonconfig import CopySource
+from minio.error import S3Error
 
 class MinioClient:
     def __init__(self, endpoint: str, access_key: str, secret_key: str, secure: bool = False):
@@ -148,3 +152,30 @@ class MinioClient:
         scheme = "https" if self.secure else "http"
         encoded_object_name = quote(object_name, safe="/")
         return f"{scheme}://{self.endpoint}/{bucket_name}/{encoded_object_name}"
+
+    def read_json(self, bucket_name: str, object_name: str) -> dict | None:
+        """读取入库清单；只有对象不存在时返回 None。"""
+        try:
+            response = self.client.get_object(bucket_name, object_name)
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject"}:
+                return None
+            raise
+        try:
+            return json.load(response)
+        finally:
+            response.close()
+            response.release_conn()
+
+    def write_json(self, bucket_name: str, object_name: str, data: dict) -> None:
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.client.put_object(
+            bucket_name, object_name, BytesIO(payload), len(payload),
+            content_type="application/json",
+        )
+
+    def publish_object(self, bucket_name: str, staged_object: str, object_name: str) -> None:
+        self.client.copy_object(bucket_name, object_name, CopySource(bucket_name, staged_object))
+
+    def remove_object(self, bucket_name: str, object_name: str) -> None:
+        self.client.remove_object(bucket_name, object_name)

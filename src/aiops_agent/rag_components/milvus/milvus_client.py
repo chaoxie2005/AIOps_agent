@@ -1,3 +1,5 @@
+import asyncio
+import json
 from typing import Optional, List, Union
 
 from pymilvus import (
@@ -309,6 +311,44 @@ class AMilvusClient:
             partition_names=partition_names,
             output_fields=output_fields,
             timeout=timeout,
+        )
+
+    async def query_ingestion_rows(
+        self, collection_name: str, document_id: str, legacy_url: str
+    ) -> list[dict]:
+        """读取文档的现有行和可通过旧 URL 识别的行，不受单次查询条数限制。"""
+        expression = (
+            f'child_metadata["document_id"] == {json.dumps(document_id)} or '
+            f"child_minio_url == {json.dumps(legacy_url, ensure_ascii=False)}"
+        )
+
+        def read() -> list[dict]:
+            iterator = self._get_sync_client().query_iterator(
+                collection_name=collection_name,
+                filter=expression,
+                partition_names=["_default"],
+                output_fields=[
+                    "child_chunk_id", "parent_chunk_id", "child_content",
+                    "child_metadata", "dense_vector", "file_type",
+                    "child_minio_url", "language",
+                ],
+                consistency_level="Strong",
+                batch_size=256,
+            )
+            rows = []
+            try:
+                while batch := iterator.next():
+                    rows.extend(batch)
+                return rows
+            finally:
+                iterator.close()
+
+        return await asyncio.to_thread(read)
+
+    async def delete_ingestion_rows(self, collection_name: str, ids: list[str]) -> None:
+        """只按主键删除已由入库流程判定过期的行。"""
+        await self.client.delete(
+            collection_name=collection_name, partition_name="_default", ids=ids
         )
 
     async def vector_search(

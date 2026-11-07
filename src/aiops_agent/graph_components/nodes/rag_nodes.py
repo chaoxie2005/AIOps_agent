@@ -48,13 +48,25 @@ async def retriever_node(state: RagState, retriever: MilvusRetriever) -> dict:
 
 
 async def aggregation_node(state: RagState) -> dict:
-    """按 parent_id 聚合并去重，只保留父文档内容。"""
-    retrieval_hits = state.get("retrieval_hits", [])
-    unique_documents = {
-        hit["document"].metadata["parent_id"]: hit["document"].metadata["parent_content"]
-        for hit in retrieval_hits
-    }
-    return {"unique_documents": list(unique_documents.values())}
+    """按父块去重，旧记录缺少父块内容时回退到子块正文。"""
+    selected: dict[tuple[str, str], tuple[str, bool]] = {}
+    for hit in state.get("retrieval_hits", []):
+        doc = hit["document"]
+        parent_id = doc.metadata.get("parent_id")
+        parent_content = doc.metadata.get("parent_content")
+        has_parent_content = isinstance(parent_content, str) and bool(parent_content.strip())
+        key = (
+            ("parent", parent_id)
+            if isinstance(parent_id, str) and parent_id
+            else ("text", doc.page_content)
+        )
+        previous = selected.get(key)
+        if previous is None or (has_parent_content and not previous[1]):
+            selected[key] = (
+                parent_content if has_parent_content else doc.page_content,
+                has_parent_content,
+            )
+    return {"unique_documents": [content for content, _ in selected.values()]}
 
 
 class RagNodes:
@@ -79,11 +91,7 @@ class RagNodes:
                 hosts.append(address.hostname)
             os.environ[key] = ",".join(hosts)
         model_client = ModelClient()
-        retriever = build_retriever_from_env(
-            milvus_url="http://localhost:19530",
-            collection_name="camel_agent",
-            score_threshold=0.3,
-        )
+        retriever = build_retriever_from_env()
         return cls(model_client=model_client, retriever=retriever)
 
     async def subquery(self, state: RagInput) -> dict:
