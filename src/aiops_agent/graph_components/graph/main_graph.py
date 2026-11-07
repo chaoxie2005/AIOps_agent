@@ -1,5 +1,9 @@
 """根据用户意图选择普通聊天或故障排查的主图。"""
 
+from collections.abc import AsyncIterator
+from contextlib import aclosing
+from typing import Literal
+
 from langgraph.graph import END, START, StateGraph
 
 from aiops_agent.agent_components.llm import ModelClient
@@ -149,7 +153,10 @@ class MainGraph:
         Returns:
             包含 intent、reply 和 result 的对外输出。
         """
-        state: OverviewState = {
+        return await self.graph.ainvoke(self._initial_state(), config=self._run_config())
+
+    def _initial_state(self) -> OverviewState:
+        return {
             "query": self.query, 
             "max_steps": self.max_steps,
             "steps": [], 
@@ -161,7 +168,32 @@ class MainGraph:
             "intent": None,
             "reply": None,
         }
-        return await self.graph.ainvoke(
-            state,
-            config={"recursion_limit": 2 * self.max_steps + 10},
-        )  # 执行一步 → 重新规划 每个排查步骤大约需要两轮，再额外预留 10 轮给检索、初始规划和收尾。
+
+    def _run_config(self) -> dict[str, int]:
+        return {"recursion_limit": 2 * self.max_steps + 10}
+
+    async def astream(
+        self,
+    ) -> AsyncIterator[tuple[Literal["progress"], str] | tuple[Literal["result"], OverviewOutput]]:
+        """流式处理完成的节点和最终的公开输出。"""
+
+        final_state = {}
+        stream = self.graph.astream(
+            self._initial_state(),
+            config=self._run_config(),
+            stream_mode=["updates", "values"],
+            version="v2",
+        )
+        async with aclosing(stream):
+            async for part in stream:
+                if part["type"] == "updates":
+                    for node_name in part["data"]:
+                        yield "progress", node_name
+                elif part["type"] == "values":
+                    final_state = part["data"]
+
+        yield "result", {
+            "intent": final_state["intent"],
+            "reply": final_state["reply"],
+            "result": final_state["result"],
+        }
