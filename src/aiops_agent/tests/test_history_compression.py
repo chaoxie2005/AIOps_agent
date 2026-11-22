@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -16,6 +17,10 @@ _PROMPT = [SystemMessage(content="intent system"), HumanMessage(content="current
 
 def _turn(query="保留用户原话", reply="旧回复"):
     return {"query": query, "reply": reply, "result": None}
+
+
+def _summary(text, *refs):
+    return AIMessage(content=json.dumps([{"text": text, "refs": refs}], ensure_ascii=False))
 
 
 def _client(responses=(), *, historical_tokens=71):
@@ -50,7 +55,7 @@ def test_contract_retries_oversized_draft_and_retains_verbatim_fields():
         "content": stack,
     }]
     ingestion = SimpleNamespace(read_history_tool_events=AsyncMock(return_value=events))
-    model = _client([AIMessage(content="长" * 201), AIMessage(content="已测试 CPU。")])
+    model = _client([AIMessage(content="长" * 201), _summary("已测试 CPU。", 1)])
     query = "只查看最近 5 分钟"
 
     assessment, history = asyncio.run(compress_history_node([_turn(query)], _PROMPT, model, ingestion))
@@ -61,7 +66,7 @@ def test_contract_retries_oversized_draft_and_retains_verbatim_fields():
     assert "收紧措辞，不准新增事实" in model.ainvoke.await_args.args[0][-1].content
     assert "长" * 201 in [message.content for message in model.ainvoke.await_args.args[0]]
     assert [chunk.source for chunk in assessment.compressible_chunks] == ["turn"]
-    assert "已测试 CPU。" in history
+    assert "已测试 CPU。 [溯源: turn:1]" in history
     assert query in history
     assert '"query": "cpu_total", "minutes": 5' in history
     assert all(value in history for value in ("query_metrics", "call_42", "tool_out_42", stack))
@@ -71,7 +76,7 @@ def test_contract_retries_oversized_draft_and_retains_verbatim_fields():
 
 def test_batches_merge_in_order_using_previous_summary():
     turns = [_turn(f"第 {index} 个请求", f"第 {index} 个回复") for index in range(1, 10)]
-    model = _client([AIMessage(content="前八轮摘要"), AIMessage(content="合并后的九轮摘要")])
+    model = _client([_summary("前八轮摘要", 1, 8), _summary("合并后的九轮摘要", 1, 9)])
 
     _, history = asyncio.run(compress_history_node(turns, _PROMPT, model, None))
 
@@ -81,7 +86,7 @@ def test_batches_merge_in_order_using_previous_summary():
     assert "第 9 个回复" not in first.args[0][1].content
     assert "前八轮摘要" in second.args[0][1].content
     assert "第 9 个回复" in second.args[0][1].content
-    assert history is not None and "合并后的九轮摘要" in history
+    assert history is not None and "合并后的九轮摘要 [溯源: turn:1, turn:9]" in history
 
 
 def test_stack_only_bypasses_summary_but_can_be_injected():
@@ -125,7 +130,7 @@ def test_main_graph_passes_history_to_intent_and_chat(monkeypatch, summary_fails
             if "会话历史压缩器" in messages[0].content:
                 if summary_fails:
                     raise RuntimeError("synthetic model failure")
-                return AIMessage(content="compressed answer")
+                return _summary("compressed answer", 1)
             return AIMessage(content='{"intent":"chat"}')
 
         answers = [AIMessage(content="old answer"), AIMessage(content="new answer")]
@@ -163,7 +168,7 @@ def test_main_graph_passes_history_to_intent_and_chat(monkeypatch, summary_fails
 
 
 def test_final_history_over_budget_is_not_injected():
-    model = _client([AIMessage(content="短摘要")])
+    model = _client([_summary("短摘要", 1)])
     model.estimate_message_tokens.side_effect = [71, 95, 50, 101]
     _, history = asyncio.run(compress_history_node([_turn()], _PROMPT, model, None))
 
@@ -180,7 +185,7 @@ def test_main_graph_injects_summary_into_diagnosis_stages(monkeypatch):
 
         async def invoke(messages):
             if "会话历史压缩器" in messages[0].content:
-                return AIMessage(content="compressed diagnosis")
+                return _summary("compressed diagnosis", 1)
             return AIMessage(content='{"intent":"aiops"}')
 
         result = {

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import ToolCallLimitMiddleware, wrap_tool_call
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from loguru import logger
 
@@ -11,6 +11,7 @@ from aiops_agent.agent_components.llm import ModelClient
 from aiops_agent.agent_components.memory.ingestion import TurnIngestion
 from aiops_agent.agent_components.toolkits.query_metrics import query_metrics
 from aiops_agent.agent_components.toolkits.rag_search import make_rag_search_tool
+from aiops_agent.agent_components.toolkits.recall_history import HistoryRecall
 from aiops_agent.graph_components.states.state import (
     Evidence, ExecutorInput, ExecutorPrivateState, ToolCallRecord, ToolResultRecord,
 )
@@ -76,7 +77,8 @@ async def prepare_step(state: ExecutorInput, max_tool_calls: int = 3) -> dict:
 
 async def execute_node(
     state: ExecutorPrivateState, model_client: ModelClient, rag_tool: BaseTool,
-    *, ingestion: TurnIngestion | None = None,
+    *, ingestion: TurnIngestion | None = None, history_recall: HistoryRecall | None = None,
+    compressed_history: str | None = None,
 ) -> dict:
     """让 Agent 自行选择 RAG 或监控工具来执行当前排障步骤。
 
@@ -85,6 +87,8 @@ async def execute_node(
         model_client: 提供 Agent 所使用模型的客户端。
         rag_tool: 使用 make_rag_search_tool 创建并绑定检索器的 RAG 工具。
         ingestion: 本轮会话事件采集器。缺省时跳过工具事件归档。
+        history_recall: 当前会话的原文召回能力。
+        compressed_history: 含溯源标签的本轮压缩历史。
 
     Returns:
         包含工具调用、工具结果、候选证据和步骤结果的状态更新。
@@ -127,9 +131,18 @@ async def execute_node(
         if ingestion is not None:
             middleware.append(ingestion.tool_middleware(step_id))
         middleware.append(handle_tool_error)
+        tools = [rag_tool, query_metrics]
+        if history_recall is not None:
+            tools.append(history_recall.make_tool(messages[0]))
+        if compressed_history is not None:
+            history_message = HumanMessage(content=compressed_history)
+            with_history = [messages[0], history_message, *messages[1:]]
+            limit = getattr(model_client, "input_token_limit", None)
+            if limit is not None and model_client.estimate_message_tokens(with_history) <= limit:
+                messages = with_history
         agent = create_agent(
             model=model_client.model,
-            tools=[rag_tool, query_metrics],
+            tools=tools,
             system_prompt=messages[0],
             middleware=middleware,
         )
@@ -189,7 +202,8 @@ class ExecuteNodes:
 
     def __init__(
         self, model_client: ModelClient, rag_tool: BaseTool, max_tool_calls: int = 3,
-        *, ingestion: TurnIngestion | None = None,
+        *, ingestion: TurnIngestion | None = None, history_recall: HistoryRecall | None = None,
+        compressed_history: str | None = None,
     ) -> None:
         """保存执行子图所需的依赖。
 
@@ -198,11 +212,15 @@ class ExecuteNodes:
             rag_tool: 使用 make_rag_search_tool 创建的知识检索工具。
             max_tool_calls: 单个步骤允许的最大工具调用次数。
             ingestion: 本轮会话事件采集器。缺省时跳过工具事件归档。
+            history_recall: 当前会话的原文召回能力。
+            compressed_history: 含溯源标签的本轮压缩历史。
         """
         self.model_client = model_client
         self.rag_tool = rag_tool
         self.max_tool_calls = max_tool_calls
         self.ingestion = ingestion
+        self.history_recall = history_recall
+        self.compressed_history = compressed_history
 
     @classmethod
     def from_env(cls) -> "ExecuteNodes":
@@ -225,4 +243,7 @@ class ExecuteNodes:
         Returns:
             当前步骤的状态更新。已有步骤结果时返回空字典。
         """
-        return await execute_node(state, self.model_client, self.rag_tool, ingestion=self.ingestion)
+        return await execute_node(
+            state, self.model_client, self.rag_tool, ingestion=self.ingestion,
+            history_recall=self.history_recall, compressed_history=self.compressed_history,
+        )

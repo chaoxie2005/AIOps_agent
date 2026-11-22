@@ -18,6 +18,7 @@ from aiops_agent.graph_components.nodes.compress_history_node import compress_hi
 from aiops_agent.graph_components.router.intent_router import intent_router
 
 from aiops_agent.agent_components.toolkits.rag_search import make_rag_search_tool
+from aiops_agent.agent_components.toolkits.recall_history import HistoryRecall
 from aiops_agent.graph_components.graph.rag_subgraph import rag_subgraph
 from aiops_agent.graph_components.nodes.execute_node import ExecuteNodes
 from aiops_agent.graph_components.nodes.execute_step_node import execute_step_node
@@ -68,6 +69,7 @@ class MainGraph:
         self.model_client = rag_nodes.model_client if rag_nodes is not None else ModelClient()
         self.context_evaluation: ContextEvaluation | None = None # 上下文评估结果
         self.compressed_history: str | None = None # 压缩后的历史会话摘要
+        self.history_recall: HistoryRecall | None = None
         self.execute_nodes = None # 已初始化的执行依赖。缺省时按需创建。
         self.builder = StateGraph(OverviewState, output_schema=OverviewOutput)
         self.builder.add_node("rag", self._rag) # 检索知识并转换为主图文档
@@ -106,8 +108,12 @@ class MainGraph:
             空状态更新，压缩文本由本轮主图实例持有。
         """
         prompt = intent_prompt_messages(state["query"])
+        turns = state.get("turns", [])
+        self.history_recall = (
+            HistoryRecall(self.ingestion, turns, self.model_client) if self.ingestion is not None else None
+        )
         self.context_evaluation, self.compressed_history = await compress_history_node(
-            state.get("turns", []), prompt, self.model_client, self.ingestion,
+            turns, prompt, self.model_client, self.ingestion,
         )
         return {}
 
@@ -136,7 +142,8 @@ class MainGraph:
             self.rag_nodes.model_client = self.model_client
         rag_tool = make_rag_search_tool(self.rag_nodes.retriever)
         return await chat_node(
-            state, self.model_client, rag_tool, ingestion=self.ingestion, compressed_history=self.compressed_history,
+            state, self.model_client, rag_tool, ingestion=self.ingestion,
+            compressed_history=self.compressed_history, history_recall=self.history_recall,
         )
 
     async def _rag(self, state: OverviewState) -> dict:
@@ -191,7 +198,8 @@ class MainGraph:
         if self.execute_nodes is None:
             self.execute_nodes = ExecuteNodes(
                 self.model_client, make_rag_search_tool(self.rag_nodes.retriever),
-                ingestion=self.ingestion,
+                ingestion=self.ingestion, history_recall=self.history_recall,
+                compressed_history=self.compressed_history,
             )
         return await execute_step_node(state, self.execute_nodes)
 

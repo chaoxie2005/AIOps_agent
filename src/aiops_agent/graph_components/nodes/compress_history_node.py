@@ -21,7 +21,7 @@ from aiops_agent.utils.prompt_loader import load_prompt
 _SUMMARY_TOKEN_LIMIT = 200 # 压缩后的摘要最大token数
 _MAX_CORRECTIONS = 2 # 最大允许的错误修正次数 
 _MAX_BATCH_CHUNKS = 8 # 最大批量处理的chunk数
-_TIGHTEN = "收紧措辞，不准新增事实。只输出完整、可用的摘要。"
+_TIGHTEN = "收紧措辞，不准新增事实。仅输出合规的 JSON 摘要，并使用可见的来源编号。"
 _COMPRESS_PROMPT = load_prompt("compress_history_prompt")
 _TOOL_FIELDS = ("_id", "tool_call_id", "tool_name", "arguments", "status")
 logger = getLogger(__name__)
@@ -41,18 +41,23 @@ def _protected_history(
         含用户原话、工具调用字段和完整堆栈的历史文本。
     """
     sections = []
-    user_inputs = [f"第 {index} 轮用户原话：{turn['query']}" for index, turn in enumerate(turns, start=1)]
+    user_inputs = [
+        f"第 {index} 轮用户原话 [溯源: turn:{index}]：{turn['query']}"
+        for index, turn in enumerate(turns, start=1)
+    ]
     if user_inputs:
         sections.append("\n".join(user_inputs))
     if events:
-        tool_calls = [
-            {key: event[key] for key in _TOOL_FIELDS if key in event}
-            for event in events
-        ]
-        sections.append("历史工具调用：\n" + json.dumps(tool_calls, ensure_ascii=False, default=str))
+        tool_calls = []
+        for event in events:
+            fields = {key: event[key] for key in _TOOL_FIELDS if key in event}
+            fields_text = json.dumps(fields, ensure_ascii=False, default=str)
+            tool_calls.append(f"{fields_text} [溯源: {event['_id']}]")
+        sections.append("历史工具调用：\n" + "\n".join(tool_calls))
     protected = (chunk for chunk in evaluation.chunks if chunk.preserve_original)
     for (source, source_id), parts in groupby(protected, key=lambda chunk: (chunk.source, chunk.source_id)):
-        sections.append(f"原始记录 {source} {source_id}：\n" + "".join(part.text for part in parts))
+        reference = f"turn:{source_id}" if source == "turn" else source_id
+        sections.append(f"原始记录 [溯源: {reference}]：\n" + "".join(part.text for part in parts))
     return "\n\n".join(sections)
 
 
@@ -67,6 +72,38 @@ def _budget_messages(prompt: Sequence[BaseMessage], history: str) -> list[BaseMe
         模型实际接收顺序下的完整消息。
     """
     return [prompt[0], HumanMessage(content=history), *prompt[1:]]
+
+
+def _parse_summary(draft: str, allowed_refs: set[int]) -> list[dict[str, Any]] | None:
+    """校验摘要条目和模型实际可见的来源编号。
+
+    Args:
+        draft: 模型生成的 JSON 摘要。
+        allowed_refs: 本批输入和上一版有效摘要中出现的编号。
+
+    Returns:
+        可用的摘要条目。格式错误或引用不在允许范围时返回 None。
+    """
+    lines = draft.splitlines()
+    if len(lines) >= 3 and lines[0] in {"```json", "```"} and lines[-1] == "```":
+        draft = "\n".join(lines[1:-1])
+    try:
+        items = json.loads(draft)
+    except ValueError:
+        return None
+    if not isinstance(items, list) or not items:
+        return None
+    for item in items:
+        if not isinstance(item, dict) or item.keys() != {"text", "refs"}:
+            return None
+        text, refs = item["text"], item["refs"]
+        if not isinstance(text, str) or not text.strip() or "[溯源" in text:
+            return None
+        if not isinstance(refs, list) or not refs or any(
+            type(ref) is not int or ref not in allowed_refs for ref in refs
+        ):
+            return None
+    return items
 
 
 async def _summarize(
@@ -85,12 +122,17 @@ async def _summarize(
     correction = HumanMessage(content=_TIGHTEN)
     chunks = evaluation.compressible_chunks
     start = 0
-    summary = ""
+    summary = "[]"
+    claims: list[dict[str, Any]] = []
+    source_refs = {
+        index: f"turn:{chunk.source_id}" if chunk.source == "turn" else chunk.source_id
+        for index, chunk in enumerate(chunks, start=1)
+    }
     while start < len(chunks):
         batch = []
         messages: list[BaseMessage] = []
-        for chunk in chunks[start:start + _MAX_BATCH_CHUNKS]:
-            entry = f"来源 {chunk.source} {chunk.source_id}，片 {chunk.part_index}：\n{chunk.text}"
+        for index, chunk in enumerate(chunks[start:start + _MAX_BATCH_CHUNKS], start=start + 1):
+            entry = f"来源编号 {index}，片 {chunk.part_index}：\n{chunk.text}"
             content = "\n\n".join([f"已有摘要：\n{summary}", "本批历史：", *batch, entry])
             candidate = [system, HumanMessage(content=content)]
             if model_client.estimate_message_tokens([*candidate, correction]) > evaluation.input_token_limit:
@@ -100,6 +142,8 @@ async def _summarize(
         if not batch:
             return None
 
+        allowed_refs = {ref for claim in claims for ref in claim["refs"]}
+        allowed_refs.update(range(start + 1, start + len(batch) + 1))
         request = messages
         for attempt in range(_MAX_CORRECTIONS + 1):
             response = await model_client.ainvoke(request)
@@ -107,8 +151,11 @@ async def _summarize(
             if isinstance(draft, str) and draft.strip():
                 draft = draft.strip()
                 if model_client.estimate_text_tokens(draft) <= _SUMMARY_TOKEN_LIMIT:
-                    summary = draft
-                    break
+                    parsed = _parse_summary(draft, allowed_refs)
+                    if parsed is not None:
+                        claims = parsed
+                        summary = json.dumps(claims, ensure_ascii=False, separators=(",", ":"))
+                        break
             if attempt == _MAX_CORRECTIONS:
                 return None
             retry = [*messages, correction]
@@ -119,7 +166,11 @@ async def _summarize(
             request = retry
         start += len(batch)
 
-    return summary
+    lines = []
+    for claim in claims:
+        references = ", ".join(dict.fromkeys(source_refs[ref] for ref in claim["refs"]))
+        lines.append(f"{claim['text'].strip()} [溯源: {references}]")
+    return "\n".join(lines)
 
 
 async def compress_history_node(

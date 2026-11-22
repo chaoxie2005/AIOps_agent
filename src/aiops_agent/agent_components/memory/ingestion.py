@@ -159,6 +159,21 @@ class TurnIngestion:
             ).sort([("created_at", 1), ("_id", 1)]))
         )
 
+    async def read_history_event(self, event_id: str) -> dict[str, Any] | None:
+        """根据事件 ID 读取当前会话中的一条已归档原文。
+
+        Args:
+            event_id: 来自历史摘要或归档的事件 ID。
+
+        Returns:
+            已脱敏的历史事件。不存在或不属于当前会话时返回 None。
+        """
+        return await asyncio.to_thread(
+            self.collection.find_one,
+            {"_id": event_id, "session_id": self.session_id, "turn_id": {"$ne": self.turn_id}},
+            {"kind": 1, "content": 1, "tool_name": 1, "tool_call_id": 1, "arguments": 1, "status": 1},
+        )
+
     def tool_middleware(self, scope: str):
         """创建工具结果采集的异步中间件。
 

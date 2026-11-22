@@ -10,6 +10,7 @@ from langchain_core.tools import BaseTool
 from aiops_agent.agent_components.llm import ModelClient
 from aiops_agent.agent_components.memory.context import recent_messages
 from aiops_agent.agent_components.memory.ingestion import TurnIngestion
+from aiops_agent.agent_components.toolkits.recall_history import HistoryRecall
 from aiops_agent.graph_components.states.state import OverviewState
 from aiops_agent.prompts.load_texts.load_chat_prompt import chat_agent_prompt, intent_agent_prompt
 
@@ -65,6 +66,7 @@ async def intent_node(
 async def chat_node(
     state: OverviewState, model_client: ModelClient, rag_tool: BaseTool,
     *, ingestion: TurnIngestion | None = None, compressed_history: str | None = None,
+    history_recall: HistoryRecall | None = None,
 ) -> dict:
     """通过 Agent 按需检索知识库并回答本轮聊天消息。
 
@@ -74,6 +76,7 @@ async def chat_node(
         rag_tool: 使用 make_rag_search_tool 创建的知识库检索工具。
         ingestion: 本轮会话事件采集器。缺省时跳过工具事件归档。
         compressed_history: 通过预算校验的本轮压缩历史。
+        history_recall: 当前会话的原文召回能力。
 
     Returns:
         包含最终聊天回复 reply 和空诊断结果 result 的状态更新。
@@ -82,9 +85,12 @@ async def chat_node(
         ValueError: Agent 未返回包含非空文本的最终模型回答。
     """
     messages = chat_agent_prompt.format_messages(question=state["query"])
+    tools = [rag_tool]
+    if history_recall is not None:
+        tools.append(history_recall.make_tool(messages[0]))
     agent = create_agent(
         model=model_client.model,
-        tools=[rag_tool],
+        tools=tools,
         system_prompt=messages[0],
         middleware=[ingestion.tool_middleware("chat")] if ingestion is not None else [],
     )
