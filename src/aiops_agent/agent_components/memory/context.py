@@ -230,8 +230,20 @@ def tool_result_chunks(event: Mapping[str, Any]) -> tuple[HistoryChunk, ...]:
     )
 
 
-def recent_messages(state: OverviewState) -> list[HumanMessage | AIMessage]:
-    """将最近几轮已完成的问答转换为有角色的模型上下文。"""
+def recent_messages(
+    state: OverviewState, *, compressed_history: str | None = None,
+) -> list[HumanMessage | AIMessage]:
+    """提供本轮的压缩历史或最近几轮原始问答。
+
+    Args:
+        state: 包含已完成问答的主图状态。
+        compressed_history: 经过预算校验的本轮压缩历史。
+
+    Returns:
+        按角色组装的历史消息。
+    """
+    if compressed_history is not None:
+        return [HumanMessage(content=compressed_history)]
     messages = []
     for turn in state.get("turns", [])[-_CONTEXT_TURNS:]:
         answer = _turn_answer(turn)
@@ -242,8 +254,18 @@ def recent_messages(state: OverviewState) -> list[HumanMessage | AIMessage]:
     return messages
 
 
-def contextual_question(state: OverviewState) -> str:
-    """为接收字符串问题的排障节点保留近期对话背景。"""
+def contextual_question(state: OverviewState, *, compressed_history: str | None = None) -> str:
+    """为接收字符串问题的排障节点附加会话背景。
+
+    Args:
+        state: 包含当前问题和已完成问答的主图状态。
+        compressed_history: 经过预算校验的本轮压缩历史。
+
+    Returns:
+        附带适用历史上下文的本轮问题。
+    """
+    if compressed_history is not None:
+        return f"近期对话：\n{compressed_history}\n\n本轮问题：\n{state['query']}"
     history = recent_messages(state)
     if not history:
         return state["query"]

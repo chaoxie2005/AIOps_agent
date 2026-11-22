@@ -157,7 +157,8 @@ def test_graph_prepares_slices_only_above_watermark(monkeypatch):
     async def run():
         model = SimpleNamespace(
             input_token_limit=100,
-            estimate_message_tokens=Mock(side_effect=[70, 71]),
+            # 第二轮超线，必保的长堆栈也超出输入预算，继续使用近期历史。
+            estimate_message_tokens=Mock(side_effect=[70, 71, 101]),
             ainvoke=AsyncMock(return_value=AIMessage(content='{"intent":"chat"}')),
         )
         traceback = 'Traceback (most recent call last):\n  File "app.py", line 42\n' + "log" * 4000

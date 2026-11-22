@@ -28,6 +28,7 @@ def intent_prompt_messages(question: str) -> list[BaseMessage]:
 
 async def intent_node(
     state: OverviewState, model_client: ModelClient, *, prompt: list[BaseMessage] | None = None,
+    compressed_history: str | None = None,
 ) -> dict:
     """识别用户消息属于普通聊天还是故障排查。
 
@@ -35,6 +36,7 @@ async def intent_node(
         state: 包含本轮用户问题 query 的主状态。
         model_client: 由主图注入的模型客户端。
         prompt: 已构造的意图识别提示，省略时按本轮问题构造。
+        compressed_history: 通过预算校验的本轮压缩历史。
 
     Returns:
         包含 chat 或 aiops 意图的状态更新。
@@ -44,7 +46,8 @@ async def intent_node(
     """
     if prompt is None:
         prompt = intent_prompt_messages(state["query"])
-    response = await model_client.ainvoke([prompt[0], *recent_messages(state), *prompt[1:]])
+    history = recent_messages(state, compressed_history=compressed_history)
+    response = await model_client.ainvoke([prompt[0], *history, *prompt[1:]])
     content = response.content
     match = re.search(r"\{.*\}", content, re.DOTALL) if isinstance(content, str) else None
     if match is None:
@@ -61,7 +64,7 @@ async def intent_node(
 
 async def chat_node(
     state: OverviewState, model_client: ModelClient, rag_tool: BaseTool,
-    *, ingestion: TurnIngestion | None = None,
+    *, ingestion: TurnIngestion | None = None, compressed_history: str | None = None,
 ) -> dict:
     """通过 Agent 按需检索知识库并回答本轮聊天消息。
 
@@ -70,6 +73,7 @@ async def chat_node(
         model_client: 由主图注入的模型客户端。
         rag_tool: 使用 make_rag_search_tool 创建的知识库检索工具。
         ingestion: 本轮会话事件采集器。缺省时跳过工具事件归档。
+        compressed_history: 通过预算校验的本轮压缩历史。
 
     Returns:
         包含最终聊天回复 reply 和空诊断结果 result 的状态更新。
@@ -84,7 +88,8 @@ async def chat_node(
         system_prompt=messages[0],
         middleware=[ingestion.tool_middleware("chat")] if ingestion is not None else [],
     )
-    output = await agent.ainvoke({"messages": [*recent_messages(state), *messages[1:]]})
+    history = recent_messages(state, compressed_history=compressed_history)
+    output = await agent.ainvoke({"messages": [*history, *messages[1:]]})
     output_messages = output.get("messages", [])
     response = output_messages[-1] if output_messages else None
     if (not isinstance(response, AIMessage) or response.tool_calls

@@ -118,6 +118,17 @@ class ModelClient:
         except NotImplementedError:
             return 3 + sum(self.model.get_num_tokens(str(message.content)) + 4 for message in messages)
 
+    def estimate_text_tokens(self, text: str) -> int:
+        """用本地 tokenizer 估算纯文本的 Token 数。
+
+        Args:
+            text: 待校验的摘要正文。
+
+        Returns:
+            文本 Token 数，不包含消息包装开销。
+        """
+        return self.model.get_num_tokens(text)
+
     def invoke(self, messages: list):
         """同步调用模型。
 

@@ -2,7 +2,6 @@
 
 from collections.abc import AsyncIterator
 from contextlib import aclosing
-from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -12,11 +11,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Overwrite
 
 from aiops_agent.agent_components.llm import ModelClient
-from aiops_agent.agent_components.memory.context import (
-    ContextEvaluation, contextual_question, evaluate_history, tool_result_chunks,
-)
+from aiops_agent.agent_components.memory.context import ContextEvaluation, contextual_question
 from aiops_agent.agent_components.memory.ingestion import TurnIngestion
 from aiops_agent.graph_components.nodes.chat_node import chat_node, intent_node, intent_prompt_messages
+from aiops_agent.graph_components.nodes.compress_history_node import compress_history_node
 from aiops_agent.graph_components.router.intent_router import intent_router
 
 from aiops_agent.agent_components.toolkits.rag_search import make_rag_search_tool
@@ -69,15 +67,18 @@ class MainGraph:
         self.rag_nodes = rag_nodes # 已初始化的排障依赖。缺省时按需创建。rag检索子图
         self.model_client = rag_nodes.model_client if rag_nodes is not None else ModelClient()
         self.context_evaluation: ContextEvaluation | None = None # 上下文评估结果
+        self.compressed_history: str | None = None # 压缩后的历史会话摘要
         self.execute_nodes = None # 已初始化的执行依赖。缺省时按需创建。
         self.builder = StateGraph(OverviewState, output_schema=OverviewOutput)
         self.builder.add_node("rag", self._rag) # 检索知识并转换为主图文档
         self.builder.add_node("plan", self._plan)  # 生成排障计划
         self.builder.add_node("execute_step", self._execute_step) # 执行排障步骤
         self.builder.add_node("replan", self._replan) # 重新生成排障计划
+        self.builder.add_node("compress_history", self._compress_history)
         self.builder.add_node("intent", self._intent) # 意图识别节点
         self.builder.add_node("chat", self._chat) # 普通聊天节点
-        self.builder.add_edge(START, "intent") # 意图识别节点是主图的入口
+        self.builder.add_edge(START, "compress_history")
+        self.builder.add_edge("compress_history", "intent")
         self.builder.add_conditional_edges("intent", intent_router, {"chat": "chat", "rag": "rag"})
         terminal = END
         if checkpointer is not None:
@@ -95,28 +96,31 @@ class MainGraph:
         })
         self.graph = self.builder.compile(checkpointer=checkpointer)
 
-    async def _intent(self, state: OverviewState) -> dict:
-        """评估历史输入预算并调用意图识别节点。
+    async def _compress_history(self, state: OverviewState) -> dict:
+        """评估并尝试压缩历史，结果保存在本轮主图实例中。
 
         Args:
-            state: 包含用户问题的主状态。
+            state: 包含当前问题和已完成问答的主图状态。
+
+        Returns:
+            空状态更新，压缩文本由本轮主图实例持有。
+        """
+        prompt = intent_prompt_messages(state["query"])
+        self.context_evaluation, self.compressed_history = await compress_history_node(
+            state.get("turns", []), prompt, self.model_client, self.ingestion,
+        )
+        return {}
+
+    async def _intent(self, state: OverviewState) -> dict:
+        """使用本轮选定的历史识别用户意图。
+
+        Args:
+            state: 包含用户问题的主图状态。
 
         Returns:
             经过校验的意图状态更新。
         """
-        prompt = intent_prompt_messages(state["query"])
-        self.context_evaluation = None
-        input_limit = getattr(self.model_client, "input_token_limit", None)
-        if input_limit is not None:
-            assessment = evaluate_history(
-                state.get("turns", []), prompt, input_limit, self.model_client.estimate_message_tokens,
-            )
-            if assessment.needs_compression and self.ingestion is not None:
-                events = await self.ingestion.read_history_tool_events()
-                tool_chunks = tuple(chunk for event in events for chunk in tool_result_chunks(event))
-                assessment = replace(assessment, chunks=assessment.chunks + tool_chunks)
-            self.context_evaluation = assessment
-        return await intent_node(state, self.model_client, prompt=prompt)
+        return await intent_node(state, self.model_client, compressed_history=self.compressed_history)
 
     async def _chat(self, state: OverviewState) -> dict:
         """调用普通聊天节点，并传入本轮工具事件采集器。
@@ -131,7 +135,9 @@ class MainGraph:
             self.rag_nodes = RagNodes.from_env()
             self.rag_nodes.model_client = self.model_client
         rag_tool = make_rag_search_tool(self.rag_nodes.retriever)
-        return await chat_node(state, self.model_client, rag_tool, ingestion=self.ingestion)
+        return await chat_node(
+            state, self.model_client, rag_tool, ingestion=self.ingestion, compressed_history=self.compressed_history,
+        )
 
     async def _rag(self, state: OverviewState) -> dict:
         """检索知识并将资料转换为主图文档。
@@ -147,7 +153,8 @@ class MainGraph:
         if self.rag_nodes is None:
             self.rag_nodes = RagNodes.from_env()
             self.rag_nodes.model_client = self.model_client
-        output = await rag_subgraph(contextual_question(state), nodes=self.rag_nodes)
+        question = contextual_question(state, compressed_history=self.compressed_history)
+        output = await rag_subgraph(question, nodes=self.rag_nodes)
         documents = [
             {
                 "id": f"k{index}", "title": f"检索资料 {index}", "content": content,
@@ -169,7 +176,8 @@ class MainGraph:
         Returns:
             初始诊断步骤的状态更新。
         """
-        return await plan_node({**state, "query": contextual_question(state)}, self.model_client)
+        question = contextual_question(state, compressed_history=self.compressed_history)
+        return await plan_node({**state, "query": question}, self.model_client)
 
     async def _execute_step(self, state: OverviewState) -> dict:
         """调用单步执行节点，并传入本轮工具事件采集器。
@@ -196,7 +204,8 @@ class MainGraph:
         Returns:
             后续计划或最终诊断结果的状态更新。
         """
-        return await replan_node({**state, "query": contextual_question(state)}, self.model_client)
+        question = contextual_question(state, compressed_history=self.compressed_history)
+        return await replan_node({**state, "query": question}, self.model_client)
 
     async def _record_turn(self, state: OverviewState) -> dict:
         """记录已完成的对话轮次并归档回复。
@@ -277,7 +286,7 @@ class MainGraph:
             async for part in stream:
                 if part["type"] == "updates":
                     for node_name in part["data"]:
-                        if node_name != "record_turn":
+                        if node_name not in {"record_turn", "compress_history"}:
                             yield "progress", node_name
                 elif part["type"] == "values":
                     final_state = part["data"]
