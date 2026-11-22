@@ -83,7 +83,9 @@ class ChatSessions:
                 checkpoint_collection_name="chat_checkpoints",
                 writes_collection_name="chat_checkpoint_writes",
             )
-            return _Storage(client, sessions, checkpointer, client[database]["chat_context_events"])
+            context_events = client[database]["chat_context_events"]
+            context_events.create_index([("session_id", 1), ("kind", 1), ("created_at", 1), ("_id", 1)])
+            return _Storage(client, sessions, checkpointer, context_events)
         except BaseException:
             client.close()
             raise

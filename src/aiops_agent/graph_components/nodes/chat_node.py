@@ -4,7 +4,7 @@ import json
 import re
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.tools import BaseTool
 
 from aiops_agent.agent_components.llm import ModelClient
@@ -14,12 +14,27 @@ from aiops_agent.graph_components.states.state import OverviewState
 from aiops_agent.prompts.load_texts.load_chat_prompt import chat_agent_prompt, intent_agent_prompt
 
 
-async def intent_node(state: OverviewState, model_client: ModelClient) -> dict:
+def intent_prompt_messages(question: str) -> list[BaseMessage]:
+    """构造意图识别和历史预算评估共用的提示消息。
+
+    Args:
+        question: 本轮用户输入。
+
+    Returns:
+        包含系统提示和本轮输入的消息列表。
+    """
+    return intent_agent_prompt.format_messages(question=question)
+
+
+async def intent_node(
+    state: OverviewState, model_client: ModelClient, *, prompt: list[BaseMessage] | None = None,
+) -> dict:
     """识别用户消息属于普通聊天还是故障排查。
 
     Args:
         state: 包含本轮用户问题 query 的主状态。
         model_client: 由主图注入的模型客户端。
+        prompt: 已构造的意图识别提示，省略时按本轮问题构造。
 
     Returns:
         包含 chat 或 aiops 意图的状态更新。
@@ -27,8 +42,9 @@ async def intent_node(state: OverviewState, model_client: ModelClient) -> dict:
     Raises:
         ValueError: 模型未返回合法的意图 JSON。
     """
-    messages = intent_agent_prompt.format_messages(question=state["query"])
-    response = await model_client.ainvoke([messages[0], *recent_messages(state), *messages[1:]])
+    if prompt is None:
+        prompt = intent_prompt_messages(state["query"])
+    response = await model_client.ainvoke([prompt[0], *recent_messages(state), *prompt[1:]])
     content = response.content
     match = re.search(r"\{.*\}", content, re.DOTALL) if isinstance(content, str) else None
     if match is None:

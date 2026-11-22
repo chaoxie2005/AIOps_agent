@@ -146,6 +146,19 @@ class TurnIngestion:
             upsert=True,
         )
 
+    async def read_history_tool_events(self) -> list[dict[str, Any]]:
+        """读取同一会话中先前请求归档的工具结果。
+
+        Returns:
+            按时间和事件 ID 排序的工具记录，排除本轮请求。
+        """
+        return await asyncio.to_thread(
+            lambda: list(self.collection.find(
+                {"session_id": self.session_id, "kind": "tool", "turn_id": {"$ne": self.turn_id}},
+                {"content": 1, "tool_name": 1, "tool_call_id": 1, "arguments": 1, "status": 1},
+            ).sort([("created_at", 1), ("_id", 1)]))
+        )
+
     def tool_middleware(self, scope: str):
         """创建工具结果采集的异步中间件。
 

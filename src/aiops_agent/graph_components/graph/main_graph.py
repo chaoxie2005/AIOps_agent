@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import aclosing
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -11,9 +12,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Overwrite
 
 from aiops_agent.agent_components.llm import ModelClient
-from aiops_agent.agent_components.memory.context import contextual_question
+from aiops_agent.agent_components.memory.context import (
+    ContextEvaluation, contextual_question, evaluate_history, tool_result_chunks,
+)
 from aiops_agent.agent_components.memory.ingestion import TurnIngestion
-from aiops_agent.graph_components.nodes.chat_node import chat_node, intent_node
+from aiops_agent.graph_components.nodes.chat_node import chat_node, intent_node, intent_prompt_messages
 from aiops_agent.graph_components.router.intent_router import intent_router
 
 from aiops_agent.agent_components.toolkits.rag_search import make_rag_search_tool
@@ -65,6 +68,7 @@ class MainGraph:
         self.ingestion = ingestion # 本轮会话事件采集器。缺省时跳过事件归档。
         self.rag_nodes = rag_nodes # 已初始化的排障依赖。缺省时按需创建。rag检索子图
         self.model_client = rag_nodes.model_client if rag_nodes is not None else ModelClient()
+        self.context_evaluation: ContextEvaluation | None = None # 上下文评估结果
         self.execute_nodes = None # 已初始化的执行依赖。缺省时按需创建。
         self.builder = StateGraph(OverviewState, output_schema=OverviewOutput)
         self.builder.add_node("rag", self._rag) # 检索知识并转换为主图文档
@@ -92,7 +96,7 @@ class MainGraph:
         self.graph = self.builder.compile(checkpointer=checkpointer)
 
     async def _intent(self, state: OverviewState) -> dict:
-        """调用意图识别节点。
+        """评估历史输入预算并调用意图识别节点。
 
         Args:
             state: 包含用户问题的主状态。
@@ -100,7 +104,19 @@ class MainGraph:
         Returns:
             经过校验的意图状态更新。
         """
-        return await intent_node(state, self.model_client)
+        prompt = intent_prompt_messages(state["query"])
+        self.context_evaluation = None
+        input_limit = getattr(self.model_client, "input_token_limit", None)
+        if input_limit is not None:
+            assessment = evaluate_history(
+                state.get("turns", []), prompt, input_limit, self.model_client.estimate_message_tokens,
+            )
+            if assessment.needs_compression and self.ingestion is not None:
+                events = await self.ingestion.read_history_tool_events()
+                tool_chunks = tuple(chunk for event in events for chunk in tool_result_chunks(event))
+                assessment = replace(assessment, chunks=assessment.chunks + tool_chunks)
+            self.context_evaluation = assessment
+        return await intent_node(state, self.model_client, prompt=prompt)
 
     async def _chat(self, state: OverviewState) -> dict:
         """调用普通聊天节点，并传入本轮工具事件采集器。
