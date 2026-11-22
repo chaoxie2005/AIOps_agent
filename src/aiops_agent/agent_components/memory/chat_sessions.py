@@ -66,7 +66,7 @@ class ChatSessions:
             SessionStorageUnavailable: 未配置 MONGO_URI。
             PyMongoError: MongoDB 连接失败或无法创建索引。
         """
-        load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+        load_dotenv(Path(__file__).resolve().parents[2] / ".env")
         uri = os.getenv("MONGO_URI", "").strip()
         if not uri:
             raise SessionStorageUnavailable("会话存储未配置")
