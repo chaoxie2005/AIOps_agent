@@ -12,7 +12,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from aiops_agent.api.app import app
 from aiops_agent.graph_components.graph import main_graph
 from aiops_agent.graph_components.nodes import chat_node
-from aiops_agent.service.chat_sessions import ChatSessions
+from aiops_agent.agent_components.memory.chat_sessions import ChatSessions
 
 
 class SessionDirectory:

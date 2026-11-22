@@ -7,7 +7,7 @@ from pymongo.errors import PyMongoError
 from aiops_agent.api.chat import router
 from aiops_agent.api.load_milvus import router as load_milvus_router
 from aiops_agent.api.sessions import router as sessions_router
-from aiops_agent.service.chat_sessions import ChatSessions, SessionBusy, SessionError, SessionNotFound
+from aiops_agent.agent_components.memory.chat_sessions import ChatSessions, SessionBusy, SessionError, SessionNotFound
 
 
 @asynccontextmanager

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from aiops_agent.schema.resquest.session import CreateSessionRequest
 from aiops_agent.schema.response.session import SessionMessage, SessionResponse
-from aiops_agent.service.chat_sessions import ChatSessions
+from aiops_agent.agent_components.memory.chat_sessions import ChatSessions
 
 router = APIRouter(prefix="/sessions")
 
@@ -21,7 +21,9 @@ def get_chat_sessions(request: Request) -> ChatSessions:
     return request.app.state.chat_sessions
 
 
-Sessions = Annotated[ChatSessions, Depends(get_chat_sessions)]
+Sessions = Annotated[
+    ChatSessions, Depends(get_chat_sessions)
+]  # 会话服务 由 FastAPI 注入会话服务实例
 UserId = Annotated[str, Query(min_length=1, description="会话所属的用户 ID。")]
 
 

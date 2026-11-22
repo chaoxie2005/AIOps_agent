@@ -19,11 +19,20 @@ logger = getLogger(__name__)
 
 @dataclass(frozen=True)
 class _ChatExecution:
-    request: ChatRequest
-    checkpointer: BaseCheckpointSaver
+    request: ChatRequest # 本轮聊天请求
+    checkpointer: BaseCheckpointSaver # 会话 checkpoint 存储器
 
 
 async def _claim_session(request: ChatRequest, sessions: Sessions) -> AsyncIterator[_ChatExecution]:
+    """取得当前会话的执行权，并在请求结束时释放。
+
+    Args:
+        request: 包含会话 ID 和用户 ID 的聊天请求。
+        sessions: 用于校验会话归属并取得执行权的会话服务。
+
+    Yields:
+        包含本轮聊天请求和会话 checkpoint 存储器的执行上下文。
+    """
     async with sessions.claim(request.session_id, request.user_id) as checkpointer:
         yield _ChatExecution(request, checkpointer)
 
@@ -32,6 +41,14 @@ ChatExecution = Annotated[_ChatExecution, Depends(_claim_session, scope="request
 
 
 def _build_graph(execution: _ChatExecution) -> MainGraph:
+    """使用本轮请求的参数构建聊天与排障主图。
+
+    Args:
+        execution: 包含本轮聊天请求和会话 checkpoint 存储器的执行上下文。
+
+    Returns:
+        以会话 ID 为 LangGraph thread_id、可读写该会话状态的主图。
+    """
     request = execution.request
     kwargs = {"max_steps": request.max_steps} if request.max_steps is not None else {}
     return MainGraph(

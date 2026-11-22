@@ -11,7 +11,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Overwrite
 
 from aiops_agent.agent_components.llm import ModelClient
-from aiops_agent.graph_components.nodes.chat_node import chat_node, contextual_question, intent_node
+from aiops_agent.agent_components.memory.context import contextual_question
+from aiops_agent.graph_components.nodes.chat_node import chat_node, intent_node
 from aiops_agent.graph_components.router.intent_router import intent_router
 
 from aiops_agent.agent_components.toolkits.rag_search import make_rag_search_tool
