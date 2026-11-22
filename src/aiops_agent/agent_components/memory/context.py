@@ -16,6 +16,18 @@ _MAX_CHUNK_CHARS = 7999 # 每个历史单元（用户的输入和模型的回答
 _CJK = re.compile(r"[\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]") # 中日韩字符正则表达式
 
 
+_FILLER = frozenset({"ok", "okay", "好", "好的", "收到", "嗯"})
+_STACK_TRACE = re.compile(
+    r"\b(?:Exception Group )?Traceback \(most recent call last\):"
+    r"|^[ \t]*(?:"
+    r"File [\"'][^\r\n]+[\"'], line \d+\b"
+    r"|at [^\r\n]*(?:\.[A-Za-z][A-Za-z0-9]*|node:[^\s():]+|<anonymous>):\d+(?::\d+)?\)?[ \t]*(?=\r?$)"
+    r"|at [\w.$<>/-]+\((?:Native Method|Unknown Source)\)[ \t]*(?=\r?$)"
+    r")",
+    re.MULTILINE,
+)
+
+
 @dataclass(frozen=True)
 class HistoryChunk:
     """保留一段历史正文及其来源和顺序。"""
@@ -25,6 +37,7 @@ class HistoryChunk:
     part_index: int # 历史单元在轮次中的索引
     text: str # 原始历史单元文本
     estimated_words: int # 估算的词数，包含中日韩字符的加权字数
+    preserve_original: bool = False # 是否保留原始历史单元文本
 
 
 @dataclass(frozen=True)
@@ -39,6 +52,11 @@ class ContextEvaluation:
     def needs_compression(self) -> bool:
         """判断估算输入量是否严格超过 70% 水位线。"""
         return self.estimated_tokens * 10 > self.input_token_limit * 7
+
+    @property
+    def compressible_chunks(self) -> tuple[HistoryChunk, ...]:
+        """返回可以交给摘要器处理的历史切片。"""
+        return tuple(chunk for chunk in self.chunks if not chunk.preserve_original)
 
 
 def estimate_words(text: str) -> int:
@@ -71,6 +89,7 @@ def _turn_answer(turn: ChatTurn) -> str:
 
 def _history_chunks(
     source: Literal["turn", "tool"], source_id: str, text: str,
+    *, preserve_original: bool = False,
 ) -> tuple[HistoryChunk, ...]:
     """优先在换行处拆分大的历史单元，保留原始正文。
 
@@ -78,6 +97,7 @@ def _history_chunks(
         source: 历史单元的来源类型。
         source_id: 轮次序号或归档事件 ID。
         text: 完整的历史单元文本。
+        preserve_original: 该来源的切片是否需要绕过摘要。
 
     Returns:
         可按序拼回原文的切片。每片严格少于 8,000 个字符。
@@ -91,9 +111,72 @@ def _history_chunks(
             if line_end != -1:
                 end = line_end + 1
         part = text[start:end]
-        chunks.append(HistoryChunk(source, source_id, len(chunks), part, estimate_words(part)))
+        chunks.append(HistoryChunk(source, source_id, len(chunks), part, estimate_words(part), preserve_original))
         start = end
     return tuple(chunks)
+
+
+def _is_empty_or_filler(text: str) -> bool:
+    """识别独立出现时缺少内容的空白或短应答。
+
+    Args:
+        text: 待检查的角色正文或工具返回。
+
+    Returns:
+        正文为空白或仅含短应答时返回 True。
+    """
+    normalized = text.strip().casefold()
+    return not normalized or normalized.rstrip(".!。！").rstrip() in _FILLER
+
+
+def _has_stack_trace(content: Any) -> bool:
+    """检查原始正文或结构化返回中的常见调用栈格式。
+
+    Args:
+        content: 文本或结构化的正文。
+
+    Returns:
+        发现 Python、JavaScript 或 Java 常见堆栈标记时返回 True。
+    """
+    if isinstance(content, Mapping):
+        return any(_has_stack_trace(value) for value in content.values())
+    if isinstance(content, (list, tuple)):
+        return any(_has_stack_trace(item) for item in content)
+    if not isinstance(content, str):
+        return False
+    if _STACK_TRACE.search(content):
+        return True
+    if content.lstrip().startswith(("{", "[")):
+        try:
+            decoded = json.loads(content)
+        except (ValueError, RecursionError):
+            return False
+        return _has_stack_trace(decoded)
+    return False
+
+
+def _turn_chunks(source_id: str, query: str, answer: str) -> tuple[HistoryChunk, ...]:
+    """对完整问答进行前置检查，再按轮次生成切片。
+
+    Args:
+        source_id: 原始会话中的轮次序号。
+        query: 用户原始输入。
+        answer: 助手回复或诊断摘要正文。
+
+    Returns:
+        通过检查的问答切片。包含堆栈的整轮切片标为原文保留。
+    """
+    preserve_original = _has_stack_trace(query) or _has_stack_trace(answer)
+    if preserve_original:
+        text = f"用户：{query}\n助手：{answer}"
+    elif query.strip():
+        # 用户的短回应也可能在确认上轮操作，和本轮问答一起保留。
+        text = f"用户：{query}\n助手：{answer}" if answer.strip() else f"用户：{query}"
+    elif not _is_empty_or_filler(answer):
+        text = f"助手：{answer}"
+    else:
+        return ()
+    return _history_chunks("turn", source_id, text, preserve_original=preserve_original)
 
 
 def evaluate_history(
@@ -122,7 +205,7 @@ def evaluate_history(
     chunks = tuple(
         chunk
         for index, (turn, answer) in enumerate(zip(turns, answers, strict=True), start=1)
-        for chunk in _history_chunks("turn", str(index), f"用户：{turn['query']}\n助手：{answer}")
+        for chunk in _turn_chunks(str(index), turn["query"], answer)
     )
     return replace(evaluation, chunks=chunks)
 
@@ -138,10 +221,13 @@ def tool_result_chunks(event: Mapping[str, Any]) -> tuple[HistoryChunk, ...]:
     """
     call = {key: event[key] for key in ("tool_name", "tool_call_id", "arguments", "status") if key in event}
     content = event["content"]
-    if not isinstance(content, str):
-        content = json.dumps(content, ensure_ascii=False, default=str)
-    text = f"{json.dumps(call, ensure_ascii=False, default=str)}\n{content}"
-    return _history_chunks("tool", event["_id"], text)
+    call_text = json.dumps(call, ensure_ascii=False, default=str)
+    if event.get("status") != "error" and isinstance(content, str) and _is_empty_or_filler(content):
+        return _history_chunks("tool", event["_id"], call_text) if call else ()
+    body = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+    return _history_chunks(
+        "tool", event["_id"], f"{call_text}\n{body}", preserve_original=_has_stack_trace(content),
+    )
 
 
 def recent_messages(state: OverviewState) -> list[HumanMessage | AIMessage]:
