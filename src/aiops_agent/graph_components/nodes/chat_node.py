@@ -4,21 +4,40 @@ import json
 import re
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.tools import BaseTool
 
 from aiops_agent.agent_components.llm import ModelClient
 from aiops_agent.agent_components.memory.context import recent_messages
+from aiops_agent.agent_components.memory.ingestion import TurnIngestion
+from aiops_agent.agent_components.toolkits.recall_history import HistoryRecall
 from aiops_agent.graph_components.states.state import OverviewState
 from aiops_agent.prompts.load_texts.load_chat_prompt import chat_agent_prompt, intent_agent_prompt
 
 
-async def intent_node(state: OverviewState, model_client: ModelClient) -> dict:
+def intent_prompt_messages(question: str) -> list[BaseMessage]:
+    """构造意图识别和历史预算评估共用的提示消息。
+
+    Args:
+        question: 本轮用户输入。
+
+    Returns:
+        包含系统提示和本轮输入的消息列表。
+    """
+    return intent_agent_prompt.format_messages(question=question)
+
+
+async def intent_node(
+    state: OverviewState, model_client: ModelClient, *, prompt: list[BaseMessage] | None = None,
+    compressed_history: str | None = None,
+) -> dict:
     """识别用户消息属于普通聊天还是故障排查。
 
     Args:
         state: 包含本轮用户问题 query 的主状态。
         model_client: 由主图注入的模型客户端。
+        prompt: 已构造的意图识别提示，省略时按本轮问题构造。
+        compressed_history: 通过预算校验的本轮压缩历史。
 
     Returns:
         包含 chat 或 aiops 意图的状态更新。
@@ -26,8 +45,10 @@ async def intent_node(state: OverviewState, model_client: ModelClient) -> dict:
     Raises:
         ValueError: 模型未返回合法的意图 JSON。
     """
-    messages = intent_agent_prompt.format_messages(question=state["query"])
-    response = await model_client.ainvoke([messages[0], *recent_messages(state), *messages[1:]])
+    if prompt is None:
+        prompt = intent_prompt_messages(state["query"])
+    history = recent_messages(state, compressed_history=compressed_history)
+    response = await model_client.ainvoke([prompt[0], *history, *prompt[1:]])
     content = response.content
     match = re.search(r"\{.*\}", content, re.DOTALL) if isinstance(content, str) else None
     if match is None:
@@ -42,13 +63,20 @@ async def intent_node(state: OverviewState, model_client: ModelClient) -> dict:
     return {"intent": decision["intent"]}
 
 
-async def chat_node(state: OverviewState, model_client: ModelClient, rag_tool: BaseTool) -> dict:
+async def chat_node(
+    state: OverviewState, model_client: ModelClient, rag_tool: BaseTool,
+    *, ingestion: TurnIngestion | None = None, compressed_history: str | None = None,
+    history_recall: HistoryRecall | None = None,
+) -> dict:
     """通过 Agent 按需检索知识库并回答本轮聊天消息。
 
     Args:
-        state: 包含本轮用户问题 query 的主状态。
+        state: 包含本轮用户问题和近期对话的主图状态。
         model_client: 由主图注入的模型客户端。
         rag_tool: 使用 make_rag_search_tool 创建的知识库检索工具。
+        ingestion: 本轮会话事件采集器。缺省时跳过工具事件归档。
+        compressed_history: 通过预算校验的本轮压缩历史。
+        history_recall: 当前会话的原文召回能力。
 
     Returns:
         包含最终聊天回复 reply 和空诊断结果 result 的状态更新。
@@ -57,12 +85,17 @@ async def chat_node(state: OverviewState, model_client: ModelClient, rag_tool: B
         ValueError: Agent 未返回包含非空文本的最终模型回答。
     """
     messages = chat_agent_prompt.format_messages(question=state["query"])
+    tools = [rag_tool]
+    if history_recall is not None:
+        tools.append(history_recall.make_tool(messages[0]))
     agent = create_agent(
         model=model_client.model,
-        tools=[rag_tool],
+        tools=tools,
         system_prompt=messages[0],
+        middleware=[ingestion.tool_middleware("chat")] if ingestion is not None else [],
     )
-    output = await agent.ainvoke({"messages": [*recent_messages(state), *messages[1:]]})
+    history = recent_messages(state, compressed_history=compressed_history)
+    output = await agent.ainvoke({"messages": [*history, *messages[1:]]})
     output_messages = output.get("messages", [])
     response = output_messages[-1] if output_messages else None
     if (not isinstance(response, AIMessage) or response.tool_calls

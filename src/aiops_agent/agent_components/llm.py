@@ -1,11 +1,13 @@
 """从统一环境配置创建对话模型客户端。"""
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
+from langchain_core.messages import BaseMessage
 
 
 class ModelClient:
@@ -72,6 +74,60 @@ class ModelClient:
                 raise ValueError(f"{token_config_name} 必须为正整数")
             kwargs["max_tokens"] = max_tokens
         self.model = init_chat_model(**kwargs)
+        self.input_token_limit = self._resolve_input_token_limit(max_tokens or 1024)
+
+    def _resolve_input_token_limit(self, reserved_output_tokens: int) -> int | None:
+        """读取模型窗口并扣除为输出预留的预算。
+
+        Args:
+            reserved_output_tokens: 为模型生成预留的 Token 数。
+
+        Returns:
+            可用的输入预算。窗口未知或模型元数据不足时返回 None。
+
+        Raises:
+            ValueError: LLM_CONTEXT_WINDOW 不是大于输出预留的整数。
+        """
+        configured = os.getenv("LLM_CONTEXT_WINDOW")
+        if configured is not None:
+            try:
+                window = int(configured)
+            except ValueError as exc:
+                raise ValueError("LLM_CONTEXT_WINDOW 必须是大于输出预留的整数") from exc
+            if window <= reserved_output_tokens:
+                raise ValueError("LLM_CONTEXT_WINDOW 必须是大于输出预留的整数")
+            return window - reserved_output_tokens
+
+        profile = getattr(self.model, "profile", None) or {}
+        window = profile.get("max_input_tokens")
+        if type(window) is int and window > reserved_output_tokens:
+            return window - reserved_output_tokens
+        return None
+
+    def estimate_message_tokens(self, messages: Sequence[BaseMessage]) -> int:
+        """本地估算文本消息的 Token 数。
+
+        Args:
+            messages: 参与历史上下文水位线评估的文本消息。
+
+        Returns:
+            模型计数结果，或使用本地文本 tokenizer 加消息开销得到的估算值。
+        """
+        try:
+            return self.model.get_num_tokens_from_messages(messages) # 使用模型计数结果
+        except NotImplementedError:
+            return 3 + sum(self.model.get_num_tokens(str(message.content)) + 4 for message in messages)
+
+    def estimate_text_tokens(self, text: str) -> int:
+        """用本地 tokenizer 估算纯文本的 Token 数。
+
+        Args:
+            text: 待校验的摘要正文。
+
+        Returns:
+            文本 Token 数，不包含消息包装开销。
+        """
+        return self.model.get_num_tokens(text)
 
     def invoke(self, messages: list):
         """同步调用模型。

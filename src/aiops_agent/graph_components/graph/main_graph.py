@@ -11,11 +11,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Overwrite
 
 from aiops_agent.agent_components.llm import ModelClient
-from aiops_agent.agent_components.memory.context import contextual_question
-from aiops_agent.graph_components.nodes.chat_node import chat_node, intent_node
+from aiops_agent.agent_components.memory.context import ContextEvaluation, contextual_question
+from aiops_agent.agent_components.memory.ingestion import TurnIngestion
+from aiops_agent.graph_components.nodes.chat_node import chat_node, intent_node, intent_prompt_messages
+from aiops_agent.graph_components.nodes.compress_history_node import compress_history_node
 from aiops_agent.graph_components.router.intent_router import intent_router
 
 from aiops_agent.agent_components.toolkits.rag_search import make_rag_search_tool
+from aiops_agent.agent_components.toolkits.recall_history import HistoryRecall
 from aiops_agent.graph_components.graph.rag_subgraph import rag_subgraph
 from aiops_agent.graph_components.nodes.execute_node import ExecuteNodes
 from aiops_agent.graph_components.nodes.execute_step_node import execute_step_node
@@ -38,37 +41,46 @@ class MainGraph:
         *,
         checkpointer: BaseCheckpointSaver | None = None,
         thread_id: str | None = None,
+        ingestion: TurnIngestion | None = None,
     ):
-        """保存输入并构建主图。
+        """保存输入并构建聊天与排障主图。
 
         Args:
-            query: 用户提出的故障问题。
-            max_steps: 允许执行的步骤上限，零表示直接进入诊断收尾。
-            rag_nodes: 已初始化的排障依赖；未提供时在进入排障分支后创建。
+            query: 用户提出的问题。
+            max_steps: 允许执行的排障步骤上限，零表示直接进入诊断收尾。
+            rag_nodes: 已初始化的排障依赖。缺省时按需创建。
             checkpointer: 保存会话状态的 LangGraph 后端。
-            thread_id: 使用 checkpoint 时对应的会话 ID。
+            thread_id: 启用 checkpoint 时使用的会话 ID。
+            ingestion: 本轮会话事件采集器。缺省时跳过事件归档。
 
         Raises:
-            ValueError: max_steps 不是非负整数。
+            ValueError: max_steps 不是非负整数，或 checkpointer 与 thread_id
+                仅提供其一。
         """
         if type(max_steps) is not int or max_steps < 0:
             raise ValueError("max_steps 必须为非负整数")
         if (checkpointer is None) != (thread_id is None):
             raise ValueError("checkpointer 和 thread_id 必须同时提供")
         self.query = query
-        self.max_steps = max_steps
-        self.thread_id = thread_id
-        self.rag_nodes = rag_nodes
+        self.max_steps = max_steps # 允许执行的排障步骤上限，零表示直接进入诊断收尾。
+        self.thread_id = thread_id # 会话 ID，用于 checkpoint 保存状态。
+        self.ingestion = ingestion # 本轮会话事件采集器。缺省时跳过事件归档。
+        self.rag_nodes = rag_nodes # 已初始化的排障依赖。缺省时按需创建。rag检索子图
         self.model_client = rag_nodes.model_client if rag_nodes is not None else ModelClient()
-        self.execute_nodes = None
+        self.context_evaluation: ContextEvaluation | None = None # 上下文评估结果
+        self.compressed_history: str | None = None # 压缩后的历史会话摘要
+        self.history_recall: HistoryRecall | None = None
+        self.execute_nodes = None # 已初始化的执行依赖。缺省时按需创建。
         self.builder = StateGraph(OverviewState, output_schema=OverviewOutput)
         self.builder.add_node("rag", self._rag) # 检索知识并转换为主图文档
-        self.builder.add_node("plan", self._plan) 
-        self.builder.add_node("execute_step", self._execute_step)
-        self.builder.add_node("replan", self._replan)
-        self.builder.add_node("intent", self._intent)
-        self.builder.add_node("chat", self._chat)
-        self.builder.add_edge(START, "intent")
+        self.builder.add_node("plan", self._plan)  # 生成排障计划
+        self.builder.add_node("execute_step", self._execute_step) # 执行排障步骤
+        self.builder.add_node("replan", self._replan) # 重新生成排障计划
+        self.builder.add_node("compress_history", self._compress_history)
+        self.builder.add_node("intent", self._intent) # 意图识别节点
+        self.builder.add_node("chat", self._chat) # 普通聊天节点
+        self.builder.add_edge(START, "compress_history")
+        self.builder.add_edge("compress_history", "intent")
         self.builder.add_conditional_edges("intent", intent_router, {"chat": "chat", "rag": "rag"})
         terminal = END
         if checkpointer is not None:
@@ -86,52 +98,81 @@ class MainGraph:
         })
         self.graph = self.builder.compile(checkpointer=checkpointer)
 
-    async def _intent(self, state: OverviewState) -> dict:
-        """调用意图识别节点。
+    async def _compress_history(self, state: OverviewState) -> dict:
+        """评估并尝试压缩历史，结果保存在本轮主图实例中。
 
         Args:
-            state: 包含用户问题的主状态。
+            state: 包含当前问题和已完成问答的主图状态。
+
+        Returns:
+            空状态更新，压缩文本由本轮主图实例持有。
+        """
+        prompt = intent_prompt_messages(state["query"])
+        turns = state.get("turns", [])
+        self.history_recall = (
+            HistoryRecall(self.ingestion, turns, self.model_client) if self.ingestion is not None else None
+        )
+        self.context_evaluation, self.compressed_history = await compress_history_node(
+            turns, prompt, self.model_client, self.ingestion,
+        )
+        return {}
+
+    async def _intent(self, state: OverviewState) -> dict:
+        """使用本轮选定的历史识别用户意图。
+
+        Args:
+            state: 包含用户问题的主图状态。
 
         Returns:
             经过校验的意图状态更新。
         """
-        return await intent_node(state, self.model_client)
+        return await intent_node(state, self.model_client, compressed_history=self.compressed_history)
 
     async def _chat(self, state: OverviewState) -> dict:
-        """调用普通聊天节点。
+        """调用普通聊天节点，并传入本轮工具事件采集器。
 
         Args:
-            state: 包含用户问题的主状态。
+            state: 包含用户问题和会话历史的主图状态。
 
         Returns:
-            普通聊天回答的状态更新。
+            包含普通聊天回复和空诊断结果的状态更新。
         """
         if self.rag_nodes is None:
             self.rag_nodes = RagNodes.from_env()
             self.rag_nodes.model_client = self.model_client
         rag_tool = make_rag_search_tool(self.rag_nodes.retriever)
-        return await chat_node(state, self.model_client, rag_tool)
+        return await chat_node(
+            state, self.model_client, rag_tool, ingestion=self.ingestion,
+            compressed_history=self.compressed_history, history_recall=self.history_recall,
+        )
 
     async def _rag(self, state: OverviewState) -> dict:
-        """检索知识并转换为主图文档。
+        """检索知识并将资料转换为主图文档。
+
+        启用事件归档时，记录实际传入主图的检索正文。
 
         Args:
-            state: 包含用户问题的主状态。
+            state: 包含用户问题和近期对话的主图状态。
 
         Returns:
-            本轮检索得到的知识文档状态更新。
+            包含本轮检索到的知识文档的状态更新。
         """
         if self.rag_nodes is None:
             self.rag_nodes = RagNodes.from_env()
             self.rag_nodes.model_client = self.model_client
-        output = await rag_subgraph(contextual_question(state), nodes=self.rag_nodes)
-        return {"knowledge_documents": [
+        question = contextual_question(state, compressed_history=self.compressed_history)
+        output = await rag_subgraph(question, nodes=self.rag_nodes)
+        documents = [
             {
                 "id": f"k{index}", "title": f"检索资料 {index}", "content": content,
                 "source_uri": None, "score": None,
             }
             for index, content in enumerate(output["unique_documents"], start=1)
-        ]}
+        ]
+        if self.ingestion is not None:
+            for document in documents:
+                await self.ingestion.record("rag", document["content"], source_id=document["id"])
+        return {"knowledge_documents": documents}
 
     async def _plan(self, state: OverviewState) -> dict:
         """调用规划节点。
@@ -142,13 +183,14 @@ class MainGraph:
         Returns:
             初始诊断步骤的状态更新。
         """
-        return await plan_node({**state, "query": contextual_question(state)}, self.model_client)
+        question = contextual_question(state, compressed_history=self.compressed_history)
+        return await plan_node({**state, "query": question}, self.model_client)
 
     async def _execute_step(self, state: OverviewState) -> dict:
-        """调用单步执行包装节点。
+        """调用单步执行节点，并传入本轮工具事件采集器。
 
         Args:
-            state: 包含待执行步骤和历史结果的主状态。
+            state: 包含待执行步骤和历史结果的主图状态。
 
         Returns:
             步骤状态以及本步新增的执行结果和证据。
@@ -156,6 +198,8 @@ class MainGraph:
         if self.execute_nodes is None:
             self.execute_nodes = ExecuteNodes(
                 self.model_client, make_rag_search_tool(self.rag_nodes.retriever),
+                ingestion=self.ingestion, history_recall=self.history_recall,
+                compressed_history=self.compressed_history,
             )
         return await execute_step_node(state, self.execute_nodes)
 
@@ -168,10 +212,21 @@ class MainGraph:
         Returns:
             后续计划或最终诊断结果的状态更新。
         """
-        return await replan_node({**state, "query": contextual_question(state)}, self.model_client)
+        question = contextual_question(state, compressed_history=self.compressed_history)
+        return await replan_node({**state, "query": question}, self.model_client)
 
     async def _record_turn(self, state: OverviewState) -> dict:
-        """成功完成普通聊天或排障后，将本轮问答写入会话状态。"""
+        """记录已完成的对话轮次并归档回复。
+
+        Args:
+            state: 包含用户输入、意图和本轮聊天回复或诊断结果的主图状态。
+
+        Returns:
+            包含本轮完整问答的会话状态更新。
+
+        Raises:
+            ValueError: 本轮没有有效的聊天回复或诊断结果。
+        """
         intent = state.get("intent")
         reply = state.get("reply")
         result = state.get("result")
@@ -184,6 +239,8 @@ class MainGraph:
             "result": result,
             "created_at": datetime.now(timezone.utc),
         }
+        if self.ingestion is not None:
+            await self.ingestion.record("assistant", reply if intent == "chat" else result)
         return {"turns": [turn]}
 
     async def ainvoke(self) -> OverviewOutput:
@@ -237,7 +294,7 @@ class MainGraph:
             async for part in stream:
                 if part["type"] == "updates":
                     for node_name in part["data"]:
-                        if node_name != "record_turn":
+                        if node_name not in {"record_turn", "compress_history"}:
                             yield "progress", node_name
                 elif part["type"] == "values":
                     final_state = part["data"]
