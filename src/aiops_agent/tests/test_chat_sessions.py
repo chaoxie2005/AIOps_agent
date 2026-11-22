@@ -6,13 +6,17 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain.agents import create_agent
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from aiops_agent.api.app import app
 from aiops_agent.graph_components.graph import main_graph
 from aiops_agent.graph_components.nodes import chat_node
 from aiops_agent.agent_components.memory.chat_sessions import ChatSessions
+from aiops_agent.agent_components.memory.ingestion import TurnIngestion
 
 
 class SessionDirectory:
@@ -57,9 +61,34 @@ class SessionDirectory:
         ))
 
 
+class ContextEvents:
+    """模拟 MongoDB 的会话事件插入语义。"""
+
+    def __init__(self):
+        """初始化空的内存事件集合。"""
+        self.rows = {}
+
+    def update_one(self, match, update, *, upsert):
+        """模拟按事件 ID 进行幂等插入。
+
+        Args:
+            match: 包含事件 ID 和会话 ID 的过滤条件。
+            update: 包含待插入事件的 MongoDB 更新文档。
+            upsert: 允许在事件缺失时插入。
+
+        Raises:
+            AssertionError: 未启用 upsert，或事件与过滤条件的 ID 不一致。
+        """
+        assert upsert
+        event = update["$setOnInsert"]
+        assert event["_id"] == match["_id"]
+        assert event["session_id"] == match["session_id"]
+        self.rows.setdefault(match["_id"], event)
+
+
 @pytest.fixture
 def storage(monkeypatch):
-    """用内存目录和真实的 LangGraph 内存 checkpointer 替换 MongoDB。
+    """用内存会话目录、事件集合和 LangGraph checkpointer 替换 MongoDB。
 
     Args:
         monkeypatch: pytest 提供的临时替换工具。
@@ -71,6 +100,7 @@ def storage(monkeypatch):
         client=Mock(),
         sessions=SessionDirectory(),
         checkpointer=InMemorySaver(),
+        context_events=ContextEvents(),
     )
     monkeypatch.setattr(ChatSessions, "_connect", staticmethod(lambda: backend))
     return backend
@@ -177,10 +207,10 @@ def test_sessions_are_listed_before_first_turn_and_lookup_checks_owner(storage):
 
 
 def test_sync_and_stream_share_history_and_sessions_do_not_mix(storage, chat_model):
-    """验证普通和流式聊天共用历史，并按会话隔离和恢复上下文。
+    """验证普通和流式聊天共享历史与归档，并按会话隔离。
 
     Args:
-        storage: 跨两个应用生命周期共用的测试存储。
+        storage: 跨应用生命周期共用的测试存储。
         chat_model: 可检查输入消息的模型和 Agent 替身。
     """
     classifier, agent = chat_model
@@ -199,6 +229,14 @@ def test_sync_and_stream_share_history_and_sessions_do_not_mix(storage, chat_mod
         ]
         assert client.post("/chat", json=_message(second, "Separate question")).status_code == 200
         assert [m.content for m in agent.ainvoke.await_args.args[0]["messages"]] == ["Separate question"]
+        first_events = [event for event in storage.context_events.rows.values() if event["session_id"] == first]
+        assert [(event["kind"], event["content"]) for event in first_events] == [
+            ("user", "CPU is high"), ("assistant", "Reply: CPU is high"),
+            ("user", "What next?"), ("assistant", "Reply: What next?"),
+        ]
+        assert first_events[0]["turn_id"] == first_events[1]["turn_id"]
+        assert first_events[0]["turn_id"] != first_events[2]["turn_id"]
+        assert all(event["created_at"].utcoffset().total_seconds() == 0 for event in first_events)
 
     # 重新启动应用生命周期后，仍从同一存储读取历史，而非从路由的内存变量读取。
     with TestClient(app) as client:
@@ -234,6 +272,94 @@ def test_failed_turn_does_not_appear_in_history(storage, chat_model):
         assert [m.content for m in agent.ainvoke.await_args.args[0]["messages"]] == [
             "First", "Reply: First", "Retry",
         ]
+
+
+
+def test_tool_return_is_archived_before_later_model_failure(storage, chat_model, monkeypatch):
+    """验证模型在工具返回后失败时，仍能找到完整的工具事件。
+
+    Args:
+        storage: 保存会话和归档事件的测试存储。
+        chat_model: 初始化普通聊天测试所需的模型和检索替身。
+        monkeypatch: 用于接入真实 Agent 工厂和测试工具的临时替换工具。
+    """
+    class ToolModel(FakeMessagesListChatModel):
+        def bind_tools(self, tools, **kwargs):
+            """模拟模型绑定工具。
+
+            Args:
+                tools: Agent 提供的工具列表。
+                **kwargs: Agent 提供的其他工具绑定选项。
+
+            Returns:
+                继续返回预设消息的测试模型。
+            """
+            return self
+
+    @tool
+    def get_logs(query: str) -> str:
+        """Return the log excerpt for a query.
+
+        Args:
+            query: Log query supplied by the test agent.
+
+        Returns:
+            The synthetic traceback used to verify that archiving preserves the full response.
+        """
+        return original
+
+    original = "Traceback (most recent call last):\n  File \"app.py\", line 42\n" + "x" * 9000
+    model = main_graph.ModelClient()
+    model.model = ToolModel(responses=[
+        AIMessage(content="", tool_calls=[
+            {"id": "logs-1", "name": "get_logs", "args": {"query": "crash"}},
+        ]),
+        AIMessage(content=""),
+    ])
+    monkeypatch.setattr(chat_node, "create_agent", create_agent)
+    monkeypatch.setattr(main_graph, "make_rag_search_tool", lambda _: get_logs)
+
+    with TestClient(app) as client:
+        session = _create(client)
+        response = client.post("/chat/stream", json=_message(session, "Inspect logs"))
+        assert "event: error" in response.text
+        assert _history(client, session).json() == []
+
+    user, result = storage.context_events.rows.values()
+    assert user["session_id"] == result["session_id"] == session
+    assert user["turn_id"] == result["turn_id"]
+    assert result["_id"].startswith("tool_out_")
+    assert result["tool_call_id"] == "logs-1"
+    assert result["tool_name"] == "get_logs"
+    assert result["arguments"] == {"query": "crash"}
+    assert result["content"] == original
+    assert result["tag"] == "core"
+
+
+def test_archive_write_is_idempotent_and_redacts_credentials(storage):
+    """验证归档会保留首次写入并遮蔽可识别的凭据值。
+
+    Args:
+        storage: 保存测试归档事件的内存存储。
+    """
+    async def record_events():
+        """写入成功、重复和含凭据的工具事件。"""
+        ingestion = TurnIngestion(storage.context_events, "session")
+        await ingestion.record("tool", '{"status": 200}', source_id="call-1", status="success")
+        await ingestion.record("tool", "duplicate", source_id="call-1", status="error")
+        await ingestion.record(
+            "tool", "set MODEL_API_KEY=secret-example\nkeep this line",
+            source_id="call-2", status="error",
+            arguments={"authorization": "Bearer example", "query": "keep this"},
+        )
+
+    asyncio.run(record_events())
+    first, second = storage.context_events.rows.values()
+    assert first["content"] == '{"status": 200}'
+    assert first["tag"] == "volatile"
+    assert second["tag"] == "core"
+    assert second["content"] == "set MODEL_API_KEY=[REDACTED]\nkeep this line"
+    assert second["arguments"] == {"authorization": "[REDACTED]", "query": "keep this"}
 
 
 def test_running_stream_keeps_session_reserved_until_it_finishes(storage, chat_model):
@@ -274,26 +400,21 @@ def test_running_stream_keeps_session_reserved_until_it_finishes(storage, chat_m
 
 
 def test_new_diagnosis_reuses_dialogue_but_not_previous_execution_state(storage, monkeypatch):
-    """验证新一轮排障保留历史问答，同时清空上轮的步骤、证据和知识。
+    """验证新排障轮保留历史问答、重置执行状态，并归档本轮检索资料。
 
     Args:
-        storage: 保存同一会话两轮排障结果的测试存储。
-        monkeypatch: 用固定结果替换模型和排障节点的工具。
+        storage: 保存会话问答和归档事件的测试存储。
+        monkeypatch: 用于替换模型、检索和排障节点的临时工具。
     """
     seen = []
     monkeypatch.setattr(main_graph, "ModelClient", object)
     monkeypatch.setattr(main_graph.MainGraph, "_intent", AsyncMock(return_value={"intent": "aiops"}))
 
-    async def rag(self, state):
-        """以本轮问题构造一条可辨认的知识记录。
-
-        Args:
-            state: 当前主图状态，包含本轮问题。
-
-        Returns:
-            仅包含本轮知识记录的节点更新。
-        """
-        return {"knowledge_documents": [{"id": "k1", "content": state["query"]}]}
+    monkeypatch.setattr(main_graph.RagNodes, "from_env", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        main_graph, "rag_subgraph",
+        AsyncMock(return_value={"unique_documents": ["Retrieved material"]}),
+    )
 
     async def plan(self, state):
         """检查本轮排障数据已清空，记录主图保留的对话历史。
@@ -306,7 +427,7 @@ def test_new_diagnosis_reuses_dialogue_but_not_previous_execution_state(storage,
         """
         assert state["step_results"] == []
         assert state["evidence"] == []
-        assert [doc["content"] for doc in state["knowledge_documents"]] == [state["query"]]
+        assert [doc["content"] for doc in state["knowledge_documents"]] == ["Retrieved material"]
         seen.append([turn["query"] for turn in state.get("turns", [])])
         return {"steps": [{"id": "s1", "goal": "Inspect", "status": "pending"}]}
 
@@ -339,7 +460,7 @@ def test_new_diagnosis_reuses_dialogue_but_not_previous_execution_state(storage,
             "limitations": [],
         }}
 
-    for name, fn in {"_rag": rag, "_plan": plan, "_execute_step": execute, "_replan": replan}.items():
+    for name, fn in {"_plan": plan, "_execute_step": execute, "_replan": replan}.items():
         monkeypatch.setattr(main_graph.MainGraph, name, fn)
     with TestClient(app) as client:
         session = _create(client)
@@ -350,3 +471,7 @@ def test_new_diagnosis_reuses_dialogue_but_not_previous_execution_state(storage,
     assert seen == [[], ["First diagnosis"]]
     assert messages[1]["result"]["summary"] == "Diagnosis: First diagnosis"
     assert messages[3]["content"] == "Diagnosis: Second diagnosis"
+    events = list(storage.context_events.rows.values())
+    assert [event["kind"] for event in events] == ["user", "rag", "assistant"] * 2
+    assert events[1]["content"] == events[4]["content"] == "Retrieved material"
+    assert events[2]["content"]["summary"] == "Diagnosis: First diagnosis"

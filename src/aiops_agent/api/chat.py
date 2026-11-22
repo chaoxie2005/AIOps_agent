@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from aiops_agent.agent_components.memory.ingestion import TurnIngestion
 from aiops_agent.api.sessions import Sessions
 from aiops_agent.graph_components.graph.main_graph import MainGraph
 from aiops_agent.schema.resquest.chat import ChatRequest
@@ -21,33 +22,40 @@ logger = getLogger(__name__)
 class _ChatExecution:
     request: ChatRequest # 本轮聊天请求
     checkpointer: BaseCheckpointSaver # 会话 checkpoint 存储器
+    ingestion: TurnIngestion # 本轮聊天记录采集器
 
 
 async def _claim_session(request: ChatRequest, sessions: Sessions) -> AsyncIterator[_ChatExecution]:
-    """取得当前会话的执行权，并在请求结束时释放。
+    """占用当前会话并归档本轮用户输入。
 
     Args:
-        request: 包含会话 ID 和用户 ID 的聊天请求。
-        sessions: 用于校验会话归属并取得执行权的会话服务。
+        request: 包含会话 ID、用户 ID 和输入的聊天请求。
+        sessions: 用于校验归属并取得执行权的会话服务。
 
     Yields:
-        包含本轮聊天请求和会话 checkpoint 存储器的执行上下文。
+        本轮请求、checkpointer 和会话事件采集器。
+
+    Raises:
+        SessionNotFound: 会话不存在，或记录的用户 ID 不匹配。
+        SessionBusy: 同一进程中已有请求占用此会话。
+        PyMongoError: 读取会话或归档用户输入失败。
     """
-    async with sessions.claim(request.session_id, request.user_id) as checkpointer:
-        yield _ChatExecution(request, checkpointer)
+    async with sessions.claim(request.session_id, request.user_id) as (checkpointer, ingestion):
+        await ingestion.record("user", request.query)
+        yield _ChatExecution(request, checkpointer, ingestion)
 
 
 ChatExecution = Annotated[_ChatExecution, Depends(_claim_session, scope="request")]
 
 
 def _build_graph(execution: _ChatExecution) -> MainGraph:
-    """使用本轮请求的参数构建聊天与排障主图。
+    """使用本轮请求构建聊天与排障主图。
 
     Args:
-        execution: 包含本轮聊天请求和会话 checkpoint 存储器的执行上下文。
+        execution: 包含本轮请求、checkpointer 和事件采集器的执行上下文。
 
     Returns:
-        以会话 ID 为 LangGraph thread_id、可读写该会话状态的主图。
+        使用会话 ID 作为 LangGraph thread_id 的主图。
     """
     request = execution.request
     kwargs = {"max_steps": request.max_steps} if request.max_steps is not None else {}
@@ -55,6 +63,7 @@ def _build_graph(execution: _ChatExecution) -> MainGraph:
         query=request.query,
         thread_id=request.session_id,
         checkpointer=execution.checkpointer,
+        ingestion=execution.ingestion,
         **kwargs,
     )
 

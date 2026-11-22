@@ -8,6 +8,7 @@ from langchain_core.tools import BaseTool
 from loguru import logger
 
 from aiops_agent.agent_components.llm import ModelClient
+from aiops_agent.agent_components.memory.ingestion import TurnIngestion
 from aiops_agent.agent_components.toolkits.query_metrics import query_metrics
 from aiops_agent.agent_components.toolkits.rag_search import make_rag_search_tool
 from aiops_agent.graph_components.states.state import (
@@ -73,17 +74,21 @@ async def prepare_step(state: ExecutorInput, max_tool_calls: int = 3) -> dict:
     }
 
 
-async def execute_node(state: ExecutorPrivateState, model_client: ModelClient, rag_tool: BaseTool) -> dict:
-    """让 Agent 自行选择 RAG 或监控工具，完成当前排障步骤。
+async def execute_node(
+    state: ExecutorPrivateState, model_client: ModelClient, rag_tool: BaseTool,
+    *, ingestion: TurnIngestion | None = None,
+) -> dict:
+    """让 Agent 自行选择 RAG 或监控工具来执行当前排障步骤。
 
     Args:
         state: prepare_step 初始化的步骤状态。
-        model_client: 模型客户端，使用其底层模型创建 Agent。
+        model_client: 提供 Agent 所使用模型的客户端。
         rag_tool: 使用 make_rag_search_tool 创建并绑定检索器的 RAG 工具。
+        ingestion: 本轮会话事件采集器。缺省时跳过工具事件归档。
 
     Returns:
-        包含 tool_calls、tool_results、evidence_candidates 和 step_result 的状态更新。
-        Agent 内部完成工具选择、执行和结束判断。
+        包含工具调用、工具结果、候选证据和步骤结果的状态更新。
+        当前步骤已有结果时返回空字典。
     """
     if state.get("step_result") is not None:
         logger.info("步骤 {} 已有执行结果，跳过执行", state["step_result"]["step_id"])
@@ -96,7 +101,15 @@ async def execute_node(state: ExecutorPrivateState, model_client: ModelClient, r
 
     @wrap_tool_call
     async def handle_tool_error(request, handler):
-        """把工具异常作为失败结果交还模型，让它决定是否继续。"""
+        """将工具异常转换为可交还给模型的失败消息。
+
+        Args:
+            request: 包含工具名称和调用 ID 的请求。
+            handler: 执行工具调用或转交给下一层中间件的异步函数。
+
+        Returns:
+            原始工具响应，或包含异常文本的失败工具消息。
+        """
         logger.info("步骤 {} 调用工具 {}，调用 ID: {}", step_id, request.tool_call["name"], request.tool_call["id"])
         try:
             return await handler(request)
@@ -110,11 +123,15 @@ async def execute_node(state: ExecutorPrivateState, model_client: ModelClient, r
             remaining_tool_calls=remaining,
             execution_context=json.dumps(state, ensure_ascii=False, default=str),
         )
+        middleware = [ToolCallLimitMiddleware(run_limit=remaining, exit_behavior="end")]
+        if ingestion is not None:
+            middleware.append(ingestion.tool_middleware(step_id))
+        middleware.append(handle_tool_error)
         agent = create_agent(
             model=model_client.model,
             tools=[rag_tool, query_metrics],
             system_prompt=messages[0],
-            middleware=[ToolCallLimitMiddleware(run_limit=remaining, exit_behavior="end"), handle_tool_error],
+            middleware=middleware,
         )
         try:
             output = await agent.ainvoke({"messages": messages[1:]})
@@ -170,17 +187,22 @@ async def execute_node(state: ExecutorPrivateState, model_client: ModelClient, r
 class ExecuteNodes:
     """保存执行子图的依赖，通过方法转发到已有节点函数。"""
 
-    def __init__(self, model_client: ModelClient, rag_tool: BaseTool, max_tool_calls: int = 3) -> None:
-        """保存模型、RAG 工具和每个步骤的工具调用预算。
+    def __init__(
+        self, model_client: ModelClient, rag_tool: BaseTool, max_tool_calls: int = 3,
+        *, ingestion: TurnIngestion | None = None,
+    ) -> None:
+        """保存执行子图所需的依赖。
 
         Args:
             model_client: 支持工具调用的模型客户端。
             rag_tool: 使用 make_rag_search_tool 创建的知识检索工具。
-            max_tool_calls: 单个步骤最多允许的工具调用次数，默认 3 次。
+            max_tool_calls: 单个步骤允许的最大工具调用次数。
+            ingestion: 本轮会话事件采集器。缺省时跳过工具事件归档。
         """
         self.model_client = model_client
         self.rag_tool = rag_tool
         self.max_tool_calls = max_tool_calls
+        self.ingestion = ingestion
 
     @classmethod
     def from_env(cls) -> "ExecuteNodes":
@@ -195,5 +217,12 @@ class ExecuteNodes:
         return await prepare_step(state, self.max_tool_calls)
 
     async def execute(self, state: ExecutorPrivateState) -> dict:
-        """使用保存的模型和 RAG 工具执行当前步骤。"""
-        return await execute_node(state, self.model_client, self.rag_tool)
+        """使用保存的依赖执行当前排障步骤。
+
+        Args:
+            state: 执行子图为当前步骤准备的状态。
+
+        Returns:
+            当前步骤的状态更新。已有步骤结果时返回空字典。
+        """
+        return await execute_node(state, self.model_client, self.rag_tool, ingestion=self.ingestion)

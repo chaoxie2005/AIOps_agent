@@ -13,6 +13,7 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from pymongo import MongoClient
 from pymongo.collection import Collection
 
+from aiops_agent.agent_components.memory.ingestion import TurnIngestion
 from aiops_agent.graph_components.states.state import ChatTurn
 
 
@@ -37,10 +38,11 @@ class _Storage:
     client: MongoClient
     sessions: Collection
     checkpointer: BaseCheckpointSaver
+    context_events: Collection
 
 
 class ChatSessions:
-    """保存会话目录，消息正文只读取 LangGraph checkpoint。"""
+    """管理会话目录、LangGraph 历史和上下文事件归档。"""
 
     def __init__(self) -> None:
         """初始化会话服务，将 MongoDB 连接推迟到首次请求。
@@ -54,13 +56,13 @@ class ChatSessions:
 
     @staticmethod
     def _connect() -> _Storage:
-        """连接 MongoDB，并准备会话目录和 checkpoint 存储。
+        """连接 MongoDB，准备会话目录、checkpoint 存储和事件归档。
 
-        会话目录只存 ID、所属用户和创建时间，所以空会话也能列出来。
-        对话内容由 LangGraph 写入 checkpoint，不在目录中重复保存。
+        会话目录只存 ID、所属用户和创建时间，因此也能列出空会话。
+        LangGraph 将已完成的问答写入 checkpoint，摄取事件写入独立集合。
 
         Returns:
-            MongoDB 客户端、会话目录集合及 LangGraph checkpointer。
+            封装 MongoDB 客户端、会话目录、LangGraph checkpointer 和事件集合的存储对象。
 
         Raises:
             SessionStorageUnavailable: 未配置 MONGO_URI。
@@ -81,7 +83,7 @@ class ChatSessions:
                 checkpoint_collection_name="chat_checkpoints",
                 writes_collection_name="chat_checkpoint_writes",
             )
-            return _Storage(client, sessions, checkpointer)
+            return _Storage(client, sessions, checkpointer, client[database]["chat_context_events"])
         except BaseException:
             client.close()
             raise
@@ -203,28 +205,27 @@ class ChatSessions:
     @asynccontextmanager
     async def claim(
         self, session_id: str, user_id: str
-    ) -> AsyncIterator[BaseCheckpointSaver]:
-        """占用会话，保证同一进程内一次只有一轮请求写它的 checkpoint。
+    ) -> AsyncIterator[tuple[BaseCheckpointSaver, TurnIngestion]]:
+        """占用会话，保证同一进程内每次只有一轮请求写入 checkpoint。
 
-        用 async with 包裹整轮聊天，正常结束或异常退出时都会解除占用。
-        对流式请求，这个范围覆盖整段响应流。
+        占用覆盖整个上下文管理器，也覆盖流式响应。退出时释放会话。
 
         Args:
-            session_id: 本轮聊天要使用的会话 ID。
+            session_id: 本轮聊天使用的会话 ID。
             user_id: 用于核对会话归属的用户 ID。
 
         Yields:
-            本轮 LangGraph 执行使用的 checkpointer。
+            本轮 LangGraph 使用的 checkpointer 和绑定到此会话的事件采集器。
 
         Raises:
             SessionNotFound: 会话不存在，或记录的用户 ID 不匹配。
-            SessionBusy: 同一进程中已有请求正在使用该会话。
+            SessionBusy: 同一进程中已有请求占用此会话。
         """
         storage = await self._require(session_id, user_id)
         if session_id in self._running:
             raise SessionBusy("该会话正在生成回复")
         self._running.add(session_id)
         try:
-            yield storage.checkpointer
+            yield storage.checkpointer, TurnIngestion(storage.context_events, session_id)
         finally:
             self._running.remove(session_id)
