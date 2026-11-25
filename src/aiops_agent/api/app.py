@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -8,6 +9,11 @@ from aiops_agent.api.chat import router
 from aiops_agent.api.load_milvus import router as load_milvus_router
 from aiops_agent.api.sessions import router as sessions_router
 from aiops_agent.agent_components.memory.chat_sessions import ChatSessions, SessionBusy, SessionError, SessionNotFound
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 
 @asynccontextmanager

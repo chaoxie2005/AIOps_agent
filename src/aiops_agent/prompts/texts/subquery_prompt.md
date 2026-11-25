@@ -44,6 +44,7 @@
 # Output Format
 只返回合法 JSON，不输出 Markdown 或其他解释。
 
+
 {{
   "original_question": "用户原始问题",
   "need_decomposition": true,
@@ -69,3 +70,58 @@
 - 如果需要拆解，子问题必须共同服务于原始问题。
 - 所有 depends_on 必须引用真实存在的子问题 ID。
 - 不要输出思考过程，只输出结构化结果。
+JSON schema：
+  {{
+    "type": "object",
+    "properties": {{
+      "original_question": {{
+        "type": "string"
+      }},
+      "need_decomposition": {{
+        "type": "boolean"
+      }},
+      "reason": {{
+        "type": "string"
+      }},
+      "sub_questions": {{
+        "type": "array",
+        "minItems": 1,
+        "items": {{
+          "type": "object",
+          "properties": {{
+            "id": {{
+              "type": "string",
+              "minLength": 1
+            }},
+            "question": {{
+              "type": "string",
+              "minLength": 1
+            }},
+            "depends_on": {{
+              "type": "array",
+              "items": {{
+                "type": "string"
+              }}
+            }},
+            "purpose": {{
+              "type": "string"
+            }}
+          }},
+          "required": [
+            "id",
+            "question",
+            "depends_on",
+            "purpose"
+          ],
+          "additionalProperties": false
+        }}
+      }}
+    }},
+    "required": [
+      "original_question",
+      "need_decomposition",
+      "reason",
+      "sub_questions"
+    ],
+    "additionalProperties": false
+  }}

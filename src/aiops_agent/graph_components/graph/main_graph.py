@@ -13,6 +13,7 @@ from langgraph.types import Overwrite
 from aiops_agent.agent_components.llm import ModelClient
 from aiops_agent.agent_components.memory.context import ContextEvaluation, contextual_question
 from aiops_agent.agent_components.memory.ingestion import TurnIngestion
+from aiops_agent.output_validation import fallback_replan
 from aiops_agent.graph_components.nodes.chat_node import chat_node, intent_node, intent_prompt_messages
 from aiops_agent.graph_components.nodes.compress_history_node import compress_history_node
 from aiops_agent.graph_components.router.intent_router import intent_router
@@ -216,22 +217,24 @@ class MainGraph:
         return await replan_node({**state, "query": question}, self.model_client)
 
     async def _record_turn(self, state: OverviewState) -> dict:
-        """记录已完成的对话轮次并归档回复。
+        """记录已完成的对话轮次并归档助手回复。
+
+        结果缺失时会先补齐安全的降级内容，再写入会话轮次。
 
         Args:
-            state: 包含用户输入、意图和本轮聊天回复或诊断结果的主图状态。
+            state: 包含用户输入、意图、回复和诊断结果的主图状态。
 
         Returns:
-            包含本轮完整问答的会话状态更新。
-
-        Raises:
-            ValueError: 本轮没有有效的聊天回复或诊断结果。
+            包含本轮完整问答的状态更新。
         """
-        intent = state.get("intent")
+        intent = state.get("intent") or "chat"
         reply = state.get("reply")
         result = state.get("result")
-        if not ((intent == "chat" and reply) or (intent == "aiops" and result is not None)):
-            raise ValueError("本轮没有有效的聊天或排障结果")
+        if intent == "aiops" and result is None:
+            fallback = fallback_replan("主图结束时没有诊断结果")
+            result = fallback["result"]
+        if intent == "chat" and not reply:
+            reply = "当前服务暂时无法生成可靠回复，请稍后重试。"
         turn: ChatTurn = {
             "query": state["query"],
             "intent": intent,
@@ -241,22 +244,26 @@ class MainGraph:
         }
         if self.ingestion is not None:
             await self.ingestion.record("assistant", reply if intent == "chat" else result)
+        state["intent"] = intent
+        state["reply"] = reply if intent == "chat" else None
+        state["result"] = result if intent == "aiops" else None
         return {"turns": [turn]}
 
     async def ainvoke(self) -> OverviewOutput:
-        """使用独立初始状态运行本次诊断。
+        """使用独立初始状态运行一次图调用。
 
         Returns:
             包含 intent、reply 和 result 的对外输出。
         """
-        return await self.graph.ainvoke(
+        output = await self.graph.ainvoke(
             self._initial_state(),
             config=self._run_config(),
             durability="sync" if self.thread_id is not None else None,
         )
+        return self._output(output)
 
     def _initial_state(self) -> dict:
-        # checkpoint 会保留带 add reducer 的列表；新一轮显式覆盖排障临时数据。
+        # checkpoint 会保留带 add reducer 的列表；新一轮显式覆盖上一轮的排障临时数据。
         empty = Overwrite([]) if self.thread_id is not None else []
         return {
             "query": self.query, 
@@ -271,6 +278,29 @@ class MainGraph:
             "reply": None,
         }
 
+    @staticmethod
+    def _output(state: dict) -> OverviewOutput:
+        """构造包含合法意图和可展示内容的对外输出。
+
+        Args:
+            state: 图运行的最终状态。
+
+        Returns:
+            必要时补齐降级值的有效对外输出。
+        """
+        intent = state.get("intent") or "chat"
+        reply = state.get("reply")
+        result = state.get("result")
+        if intent == "aiops" and result is None:
+            result = fallback_replan("流程结束时没有诊断结果")["result"]
+        if intent == "chat" and not reply:
+            reply = "当前服务暂时无法生成可靠回复，请稍后重试。"
+        return {
+            "intent": intent,
+            "reply": reply if intent == "chat" else None,
+            "result": result if intent == "aiops" else None,
+        }
+
     def _run_config(self) -> RunnableConfig:
         config: RunnableConfig = {"recursion_limit": 2 * self.max_steps + 10}
         if self.thread_id is not None:
@@ -280,8 +310,12 @@ class MainGraph:
     async def astream(
         self,
     ) -> AsyncIterator[tuple[Literal["progress"], str] | tuple[Literal["result"], OverviewOutput]]:
-        """流式处理完成的节点和最终的公开输出。"""
+        """流式返回已完成的节点名称和最终对外输出。
 
+        Yields:
+            节点完成时返回 ``("progress", node_name)``，
+            图结束时返回 ``("result", output)``。
+        """
         final_state = {}
         stream = self.graph.astream(
             self._initial_state(),
@@ -299,8 +333,4 @@ class MainGraph:
                 elif part["type"] == "values":
                     final_state = part["data"]
 
-        yield "result", {
-            "intent": final_state["intent"],
-            "reply": final_state["reply"],
-            "result": final_state["result"],
-        }
+        yield "result", self._output(final_state)

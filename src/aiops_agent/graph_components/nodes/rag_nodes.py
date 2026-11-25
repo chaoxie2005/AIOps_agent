@@ -3,9 +3,8 @@
 节点是普通 async 函数，签名保持 (state, 依赖) 或 (state)，便于单测；
 RagNodes 只负责持有依赖并在图里转发，不承载业务逻辑。
 """
-import json
+import logging
 import os
-import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -15,25 +14,43 @@ from loguru import logger
 
 from aiops_agent.agent_components.llm import ModelClient
 from aiops_agent.graph_components.states.state import RagInput, RagState, RetrievalHit
+from aiops_agent.output_validation import SubqueryOutput, ainvoke_structured
 from aiops_agent.prompts.load_texts.load_subquery_prompt import subquery_agent_prompt
 from aiops_agent.rag_components.retriever.factory import build_retriever_from_env
 from aiops_agent.rag_components.retriever.retriever import MilvusRetriever
 
+analysis_logger = logging.getLogger(__name__)
+
 
 async def subquery_node(state: RagInput, model_client: ModelClient) -> dict:
-    """生成子问题，并返回供图合并的状态更新。"""
+    """拆解用户问题并返回供图合并的子问题。
+
+    Args:
+        state: 包含原始问题和可选子查询数量上限的 RAG 输入。
+        model_client: 用于问题拆解的模型客户端。
+
+    Returns:
+        包含去重后子查询列表的状态更新。
+    """
     messages = subquery_agent_prompt.format_messages(
         max_sub_questions=state.get("max_subqueries", 4),
         question=state["query"],
     )
-    response = await model_client.ainvoke(messages)
-    match = re.search(r"\{.*\}", response.content, re.DOTALL)
-    raw_content = json.loads(match.group())
-    logger.info(f"子问题拆解agent生成的原始内容: {raw_content}")
-    sub_questions = [item["question"] for item in raw_content["sub_questions"]]
-    logger.info(f"子问题拆解agent生成的子问题: {sub_questions}")
-    unique_subqueries = list(dict.fromkeys(sub_questions))
-    logger.info(f"子问题拆解agent生成的去重子问题: {unique_subqueries}")
+    parsed, error = await ainvoke_structured(
+        model_client, messages, SubqueryOutput,
+        correction="只输出符合 SubqueryOutput schema 的 JSON 对象，不要输出解释。",
+    )
+    if error is not None:
+        analysis_logger.warning("子问题拆解失败，回退到原始问题: %s", error)
+        unique_subqueries = [state["query"]]
+    else:
+        assert parsed is not None
+        unique_subqueries = list(dict.fromkeys(item.question for item in parsed.sub_questions))
+        analysis_logger.info("子问题拆解结果: %s", unique_subqueries)
+    max_subqueries = state.get("max_subqueries", 4)
+    if len(unique_subqueries) > max_subqueries:
+        analysis_logger.warning("子查询数量 %d 超过上限，截断为 %d", len(unique_subqueries), max_subqueries)
+        unique_subqueries = unique_subqueries[:max_subqueries]
     return {"unique_subqueries": unique_subqueries}
 
 
