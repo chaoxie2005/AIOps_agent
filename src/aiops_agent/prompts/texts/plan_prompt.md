@@ -113,6 +113,7 @@ class PlanStep(TypedDict):
 
 只返回合法 JSON，不输出 Markdown、代码块标记或其他解释。
 
+
 {{
   "steps": [
     {{
@@ -133,3 +134,45 @@ class PlanStep(TypedDict):
 - 不输出最终诊断结论。
 - 不输出与诊断规划无关的内容。
 - 不得编造已经执行的诊断结果。
+JSON schema：
+  {{
+    "type": "object",
+    "properties": {{
+      "steps": {{
+        "type": "array",
+        "items": {{
+          "type": "object",
+          "properties": {{
+            "id": {{
+              "type": "string",
+              "minLength": 1
+            }},
+            "goal": {{
+              "type": "string",
+              "minLength": 1
+            }},
+            "status": {{
+              "type": "string",
+              "enum": [
+                "pending",
+                "running",
+                "completed",
+                "failed",
+                "skipped"
+              ]
+            }}
+          }},
+          "required": [
+            "id",
+            "goal",
+            "status"
+          ],
+          "additionalProperties": false
+        }}
+      }}
+    }},
+    "required": [
+      "steps"
+    ],
+    "additionalProperties": false
+  }}

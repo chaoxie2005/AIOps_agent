@@ -72,9 +72,9 @@ def test_intent_and_route(intent, target):
     '{"intent":["chat"]}', '{"intent":"chat","extra":true}', [],
 ])
 def test_invalid_intent_output(content):
-    """非法模型输出必须报错。"""
-    with pytest.raises(ValueError):
-        asyncio.run(intent_node({"query": "你好"}, fake_model([content])))
+    """非法模型输出必须降级到 chat，不进入排障分支。"""
+    update = asyncio.run(intent_node({"query": "你好"}, fake_model([content])))
+    assert update == {"intent": "chat", "degraded": update["degraded"]}
 
 
 @pytest.mark.parametrize("intent", [None, "other", ""])
@@ -86,10 +86,11 @@ def test_invalid_route(intent):
 
 @pytest.mark.parametrize("content", ["", "   ", []])
 def test_empty_chat_reply(content):
-    """通过真实 Agent 验证空文本和非文本回答被拒绝。"""
+    """空文本和非文本回答必须降级为明确的提示，不能伪造答案。"""
     model = SimpleNamespace(model=ToolCallingModel(responses=[AIMessage(content=content)]))
-    with pytest.raises(ValueError):
-        asyncio.run(chat_node({"query": "你好"}, model, make_rag_search_tool(KnowledgeRetriever())))
+    output = asyncio.run(chat_node({"query": "你好"}, model, make_rag_search_tool(KnowledgeRetriever())))
+    assert output["reply"]
+    assert output["result"] is None
 
 
 def test_chat_direct_answer(monkeypatch):
@@ -139,8 +140,8 @@ def test_chat_requires_final_model_reply(monkeypatch, messages):
     monkeypatch.setattr(chat_module, "create_agent", creator)
     model = fake_model([])
     tool = make_rag_search_tool(KnowledgeRetriever())
-    with pytest.raises(ValueError):
-        asyncio.run(chat_node({"query": "测试问题"}, model, tool))
+    output = asyncio.run(chat_node({"query": "测试问题"}, model, tool))
+    assert "degraded" in output
     assert creator.call_args.kwargs["model"] is model.model
     assert creator.call_args.kwargs["tools"] == [tool]
     assert creator.call_args.kwargs["system_prompt"].type == "system"

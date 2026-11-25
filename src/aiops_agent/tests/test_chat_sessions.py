@@ -131,12 +131,19 @@ def chat_model(monkeypatch):
             ValueError: 收到专门用于模拟模型失败的测试问题。
         """
         query = state["messages"][-1].content
-        if query == "fail this turn":
+        if isinstance(query, str) and query.startswith("fail this turn"):
             raise ValueError("model failed")
         return {"messages": [AIMessage(content=f"Reply: {query}")]}
 
+    async def classify(messages):
+        """按输入内容分类；失败用例保留原有语义，让 Agent 抛错。"""
+        query = messages[-1].content
+        if isinstance(query, str) and query.startswith("fail this turn"):
+            raise ValueError("model failed")
+        return await classifier(messages)
+
     agent = SimpleNamespace(ainvoke=AsyncMock(side_effect=answer))
-    model = SimpleNamespace(model=object(), ainvoke=classifier)
+    model = SimpleNamespace(model=object(), ainvoke=classify)
     monkeypatch.setattr(main_graph, "ModelClient", lambda: model)
     monkeypatch.setattr(main_graph.RagNodes, "from_env", lambda: SimpleNamespace(retriever=object()))
     monkeypatch.setattr(main_graph, "make_rag_search_tool", lambda _: object())
@@ -264,13 +271,15 @@ def test_failed_turn_does_not_appear_in_history(storage, chat_model):
         session = _create(client)
         assert client.post("/chat", json=_message(session, "First")).status_code == 200
         failed = client.post("/chat/stream", json=_message(session, "fail this turn"))
-        assert "event: error" in failed.text
+        assert "暂时无法生成可靠回复" in failed.text
         assert [message["content"] for message in _history(client, session).json()] == [
-            "First", "Reply: First",
+            "First", "Reply: First", "fail this turn", "当前服务暂时无法生成可靠回复，请稍后重试。",
         ]
         assert client.post("/chat", json=_message(session, "Retry")).status_code == 200
+        # 降级回复也作为一轮历史保留，后续 Agent 会看到原始问题、降级回复和新问题。
         assert [m.content for m in agent.ainvoke.await_args.args[0]["messages"]] == [
-            "First", "Reply: First", "Retry",
+            "First", "Reply: First", "fail this turn",
+            "当前服务暂时无法生成可靠回复，请稍后重试。", "Retry",
         ]
 
 
@@ -322,13 +331,18 @@ def test_tool_return_is_archived_before_later_model_failure(storage, chat_model,
     with TestClient(app) as client:
         session = _create(client)
         response = client.post("/chat/stream", json=_message(session, "Inspect logs"))
-        assert "event: error" in response.text
-        assert _history(client, session).json() == []
+        assert "暂时无法生成可靠回复" in response.text
+        history = _history(client, session).json()
+        # 业务降级仍完成一轮，因此有用户消息和降级回复；工具调用前的失败语义由归档事件验证。
+        assert [item["content"] for item in history] == [
+            "Inspect logs", "当前服务暂时无法生成可靠回复，请稍后重试。",
+        ]
 
-    user, result = storage.context_events.rows.values()
+    events = list(storage.context_events.rows.values())
+    user = next(item for item in events if item["kind"] == "user")
+    result = next(item for item in events if item["_id"].startswith("tool_out_"))
     assert user["session_id"] == result["session_id"] == session
     assert user["turn_id"] == result["turn_id"]
-    assert result["_id"].startswith("tool_out_")
     assert result["tool_call_id"] == "logs-1"
     assert result["tool_name"] == "get_logs"
     assert result["arguments"] == {"query": "crash"}

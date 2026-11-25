@@ -88,6 +88,7 @@
 # 输出格式
 
 只输出一个合法 JSON 对象，顶层只能包含 steps 和 result 两个字段。
+
 不输出 Markdown、代码围栏、额外解释或内部推理过程。
 
 ## 继续排查
@@ -128,3 +129,97 @@ steps 必须为空列表，result 必须为符合 DiagnosisResult 的对象，�
 - evidence_ids 和 knowledge_document_ids 必须是字符串列表，没有可引用项时返回空列表。
 - recommendations 和 limitations 必须是中文字符串列表，没有相应内容时返回空列表。
 - 不得同时返回待执行步骤和诊断结果，也不得同时返回空步骤列表和 null 结果。
+JSON schema：
+  {{
+    "type": "object",
+    "properties": {{
+      "steps": {{
+        "type": "array",
+        "items": {{
+          "type": "object",
+          "properties": {{
+            "id": {{
+              "type": "string",
+              "minLength": 1
+            }},
+            "goal": {{
+              "type": "string",
+              "minLength": 1
+            }},
+            "status": {{
+              "type": "string",
+              "enum": [
+                "pending",
+                "running",
+                "completed",
+                "failed",
+                "skipped"
+              ]
+            }}
+          }},
+          "required": [
+            "id",
+            "goal",
+            "status"
+          ],
+          "additionalProperties": false
+        }}
+      }},
+      "result": {{
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {{
+          "summary": {{
+            "type": "string",
+            "minLength": 1
+          }},
+          "root_cause": {{
+            "type": [
+              "string",
+              "null"
+            ]
+          }},
+          "evidence_ids": {{
+            "type": "array",
+            "items": {{
+              "type": "string"
+            }}
+          }},
+          "knowledge_document_ids": {{
+            "type": "array",
+            "items": {{
+              "type": "string"
+            }}
+          }},
+          "recommendations": {{
+            "type": "array",
+            "items": {{
+              "type": "string"
+            }}
+          }},
+          "limitations": {{
+            "type": "array",
+            "items": {{
+              "type": "string"
+            }}
+          }}
+        }},
+        "required": [
+          "summary",
+          "root_cause",
+          "evidence_ids",
+          "knowledge_document_ids",
+          "recommendations",
+          "limitations"
+        ],
+        "additionalProperties": false
+      }}
+    }},
+    "required": [
+      "steps",
+      "result"
+    ],
+    "additionalProperties": false
+  }}
