@@ -25,18 +25,21 @@ async def rag_subgraph(query: str, nodes: RagNodes | None = None, *, max_subquer
     builder = StateGraph(RagState, input_schema=RagInput, output_schema=RagOutput)
     builder.add_node("subquery", nodes.subquery)
     builder.add_node("schedule", nodes.schedule)
+    builder.add_node("optimize", nodes.optimize)
     builder.add_node("retrieve", nodes.retrieve)
     builder.add_node("record", nodes.record)
     builder.add_node("aggregate", nodes.aggregate)
 
     builder.set_entry_point("subquery")
     builder.add_edge("subquery", "schedule")
-    # schedule 决定下一步：optimize（暂未实现，先直通检索）、retrieve 或 aggregate。
+    # schedule 决定下一步：有依赖走 optimize 改写，没依赖直接 retrieve，都处理完走 aggregate。
     builder.add_conditional_edges("schedule", schedule_router, {
-        "optimize": "retrieve",
+        "optimize": "optimize",
         "retrieve": "retrieve",
         "aggregate": "aggregate",
     })
+    # SDOM 只改写查询，不改状态里的其他内容，改写完就去检索。
+    builder.add_edge("optimize", "retrieve")
     builder.add_edge("retrieve", "record")
     # 记录完成后回到调度，形成循环；全部完成时 schedule 会走向 aggregate。
     builder.add_edge("record", "schedule")

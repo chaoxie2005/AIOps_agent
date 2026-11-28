@@ -80,6 +80,12 @@ class SubQuestionModel(StrictModel):
     purpose: str = "" # 子查询的目的
 
 
+class SubqueryRewriteOutput(StrictModel):
+    """SDOM 对依赖子问题的改写结果：一个补全后的可检索问题。"""
+
+    rewritten_question: str = Field(min_length=1)  # 占位符已替换为具体实体的完整问题
+
+
 class SubqueryOutput(StrictModel):
     """问题拆解结果。"""
 

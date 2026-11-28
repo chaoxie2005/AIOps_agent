@@ -19,6 +19,7 @@ from aiops_agent.output_validation.schemas import (
     ReplanOutput,
     StrictModel,
     SubqueryOutput,
+    SubqueryRewriteOutput,
     SubQuestionModel,
 )
 
@@ -37,5 +38,6 @@ __all__ = [
     "ReplanOutput",
     "StrictModel",
     "SubqueryOutput",
+    "SubqueryRewriteOutput",
     "SubQuestionModel",
 ]
