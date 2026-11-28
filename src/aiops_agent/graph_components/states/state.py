@@ -138,7 +138,7 @@ class SubQueryItem(TypedDict):
     # pending: 未开始；ready: 已开始；done: 已完成；skipped: 跳过(依赖未完成)
     # 说明：skipped 子问题的 depends_on 列表为空，且 status 为 skipped 时，该子问题的 effective_query 为空
     effective_query: (
-        str  # 实际送进检索器的查询，有依赖时由 SDOM(子问题依赖优化模块) 改写
+        str  # 实际送进检索器的查询文本，有依赖时由 SDOM(子问题依赖优化模块) 改写
     )
 
 
@@ -156,6 +156,14 @@ class RagState(TypedDict, total=False):
     query: Required[str]  # 本次 RAG 检索要解决的问题
     unique_subqueries: list[str]  # 兼容旧路由的子查询文本列表
     sub_queries: list[SubQueryItem]  # 携带依赖关系的子问题，供调度与 SDOM 使用
+    # 调度器每轮只挑一个子问题来处理，current_subquery 保存这一轮选中的项。
+    current_subquery: SubQueryItem  # 当前正在处理的子问题，retrieve/optimize 都读它
+    # 已完成或已跳过的子问题 ID；调度器用它判断某个子问题的依赖是否就绪。
+    completed_ids: list[str]
+    # 调度器告诉图下一步走哪个节点：optimize=做 SDOM 改写，retrieve=直接检索，aggregate=收尾。
+    next_action: Literal["optimize", "retrieve", "aggregate"]
+    # 供人工核对：每个子问题改写后的查询文本，键是子问题 ID。
+    effective_queries: dict[str, str]
     retrieval_hits: Annotated[list[RetrievalHit], add]  # 并行检索的原始召回结果
     unique_documents: list[str]  # 聚合去重后的父文档内容列表
     max_subqueries: int  # 允许生成的子查询上限数量
