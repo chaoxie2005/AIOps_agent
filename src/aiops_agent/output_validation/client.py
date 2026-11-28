@@ -125,11 +125,13 @@ async def ainvoke_structured(
     """
     error: str | None = None
     structured = None
-    invoke = getattr(client, "ainvoke", None)
+    invoke = getattr(client, "ainvoke", None) # 获取 client 自身的 ainvoke 方法，或 None
     if not callable(invoke):
+        # client 没有 ainvoke 时，取 client.model（裸 LangChain 模型）或 client 本身，
         model = getattr(client, "model", client)
         try:
-            structured = model.with_structured_output(schema)
+            structured = model.with_structured_output(schema) # 尝试让模型以原生结构化输出方式返回
+        # 失败则退化为文本 JSON 解析。
         except (AttributeError, NotImplementedError, ValueError, TypeError) as exc:
             logger.debug("模型不支持原生结构化输出，改用文本 JSON 解析: %s", exc)
         invoke = getattr(structured or model, "ainvoke", None)
@@ -139,7 +141,10 @@ async def ainvoke_structured(
     request: Any = list(messages)
     for attempt in range(retries + 1):
         try:
+            # 真正的模型调用：invoke 是 ModelClient.ainvoke 或模型的 ainvoke，
+            # 最终经由 LangChain 的 ChatOpenAI 发送请求到 LLM_BASE_URL。
             response = await invoke(request)
+            # 原生结构化输出直接返回 schema 实例；否则从响应文本中解析 JSON 并校验。
             parsed = (
                 response
                 if isinstance(response, schema)

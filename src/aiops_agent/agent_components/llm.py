@@ -73,6 +73,7 @@ class ModelClient:
             if type(max_tokens) is not int or max_tokens <= 0:
                 raise ValueError(f"{token_config_name} 必须为正整数")
             kwargs["max_tokens"] = max_tokens
+        # 用 OpenAI 兼容协议创建底层 chat model；真正的 HTTP 请求由它发出。
         self.model = init_chat_model(**kwargs)
         self.input_token_limit = self._resolve_input_token_limit(max_tokens or 1024)
 
@@ -149,4 +150,5 @@ class ModelClient:
         Returns:
             模型返回的消息。
         """
+        # 转发给底层 chat model（如 ChatOpenAI），由 LangChain 构造并发送请求。
         return await self.model.ainvoke(messages)

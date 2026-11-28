@@ -98,10 +98,37 @@ class SubqueryOutput(StrictModel):
         Raises:
             ValueError: 子查询 ID 重复，或依赖了不存在的子查询。
         """
-        ids = {item.id for item in self.sub_questions}
+        ids = {item.id for item in self.sub_questions} # 子查询 ID 集合
         if len(ids) != len(self.sub_questions):
             raise ValueError("sub_questions.id 必须唯一")
         for item in self.sub_questions:
+            if item.id in item.depends_on:
+                raise ValueError(f"{item.id} 不能依赖自身")
+            if len(set(item.depends_on)) != len(item.depends_on):
+                raise ValueError(f"{item.id} 的 depends_on 存在重复 ID")
             if any(dep not in ids for dep in item.depends_on):
                 raise ValueError(f"{item.id} 依赖了不存在的子查询")
+
+        # 三色 DFS：发现指向 visiting 节点的边即为环，依赖图必须是 DAG。
+        # 0: 白色代表未访问；1: 灰色代表正在访问、(所依赖的前置条件)尚未处理完；2: 黑色代表已处理完。
+        colors: dict[str, int] = {}
+        deps = {item.id: item.depends_on for item in self.sub_questions}
+        visiting: list[str] = []
+
+        def visit(node: str) -> None:
+            # 已访问，且正在处理中，说明存在环
+            if colors.get(node) == 1:
+                cycle = " -> ".join([*visiting[visiting.index(node):], node])
+                raise ValueError(f"子查询依赖存在环: {cycle}")
+            if colors.get(node) == 2:
+                return
+            colors[node] = 1
+            visiting.append(node)
+            for dep in deps[node]:
+                visit(dep)
+            visiting.pop()
+            colors[node] = 2
+
+        for item in self.sub_questions:
+            visit(item.id)
         return self

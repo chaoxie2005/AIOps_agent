@@ -127,6 +127,21 @@ class OverviewState(TypedDict, total=False):
     reply: str | None  # 普通聊天节点生成的回答
     turns: Annotated[list[ChatTurn], add]  # 只追加已完成的会话轮次
 
+class SubQueryItem(TypedDict):
+    """拆解后的单个子问题，携带依赖优化需要的字段。"""
+
+    id: str  # 子问题唯一标识，如 q1
+    question: str  # 原始子问题文本，可能包含 #qid# 占位符
+    depends_on: list[str]  # 依赖的子问题 ID 列表
+    purpose: str  # 该子问题需要获取的信息
+    status: Literal["pending", "ready", "done", "skipped"]  # 调度状态 ，默认 pending
+    # pending: 未开始；ready: 已开始；done: 已完成；skipped: 跳过(依赖未完成)
+    # 说明：skipped 子问题的 depends_on 列表为空，且 status 为 skipped 时，该子问题的 effective_query 为空
+    effective_query: (
+        str  # 实际送进检索器的查询，有依赖时由 SDOM(子问题依赖优化模块) 改写
+    )
+
+
 class RagInput(TypedDict, total=False):
     """RAG 子图输入；包含要检索的问题和子问题列表。"""
 
@@ -134,11 +149,13 @@ class RagInput(TypedDict, total=False):
     unique_subqueries: list[str]  # 去重后用于检索的子问题列表
     max_subqueries: int  # 允许生成的子查询上限数量
 
+
 class RagState(TypedDict, total=False):
     """RAG 子图状态；检索结果可以由并行节点追加。"""
 
     query: Required[str]  # 本次 RAG 检索要解决的问题
-    unique_subqueries: list[str]  # 去重后用于检索的子问题列表
+    unique_subqueries: list[str]  # 兼容旧路由的子查询文本列表
+    sub_queries: list[SubQueryItem]  # 携带依赖关系的子问题，供调度与 SDOM 使用
     retrieval_hits: Annotated[list[RetrievalHit], add]  # 并行检索的原始召回结果
     unique_documents: list[str]  # 聚合去重后的父文档内容列表
     max_subqueries: int  # 允许生成的子查询上限数量
