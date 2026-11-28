@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AIOps Agent 前端原型</title>
+  <style>
+    :root {
+      --primary: #1e3a5f;
+      --secondary: #2563eb;
+      --accent: #059669;
+      --bg: #f8fafc;
+      --fg: #0f172a;
+      --card: #ffffff;
+      --muted: #f1f3f5;
+      --muted-fg: #475569;
+      --border: #e4e7eb;
+      --danger: #dc2626;
+      --warning: #d97706;
+      --shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Fira Sans", "Segoe UI", "PingFang SC", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    button, textarea { font: inherit; }
+    .app { height: 100vh; display: grid; grid-template-columns: 260px 1fr; }
+    .sidebar {
+      background: var(--primary);
+      color: white;
+      padding: 20px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 0 6px; }
+    .brand-mark {
+      width: 34px; height: 34px; border-radius: 9px;
+      background: rgba(255,255,255,.14);
+      display: grid; place-items: center;
+      font-family: "Fira Code", monospace; font-weight: 700;
+    }
+    .brand-title { font-weight: 700; letter-spacing: .2px; }
+    .brand-sub { font-size: 12px; opacity: .72; }
+    .new-btn {
+      border: 0; border-radius: 8px; padding: 10px 12px;
+      background: white; color: var(--primary); font-weight: 700; cursor: pointer;
+    }
+    .section-label { font-size: 12px; opacity: .7; padding: 0 6px; }
+    .sessions { display: flex; flex-direction: column; gap: 6px; overflow: auto; }
+    .session {
+      padding: 10px 12px; border-radius: 8px; cursor: pointer;
+      background: rgba(255,255,255,.08);
+      border: 1px solid transparent;
+    }
+    .session.active { background: white; color: var(--primary); border-color: white; }
+    .session-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .session-meta { font-size: 11px; opacity: .72; margin-top: 3px; }
+    .sidebar-footer { margin-top: auto; font-size: 11px; opacity: .65; padding: 0 6px; }
+    .main { min-width: 0; display: grid; grid-template-rows: 64px 1fr auto; }
+    .topbar {
+      background: var(--card); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px;
+    }
+    .top-title { font-weight: 700; font-size: 16px; }
+    .top-meta { display: flex; gap: 8px; align-items: center; color: var(--muted-fg); font-size: 12px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+    .chat-area { overflow: auto; padding: 24px 28px; }
+    .message { display: flex; gap: 12px; margin-bottom: 18px; max-width: 900px; }
+    .message.user { margin-left: auto; flex-direction: row-reverse; }
+    .avatar {
+      width: 32px; height: 32px; border-radius: 8px; flex: 0 0 auto;
+      display: grid; place-items: center; font-family: "Fira Code", monospace; font-size: 12px;
+      background: var(--muted); color: var(--muted-fg);
+    }
+    .message.user .avatar { background: var(--secondary); color: white; }
+    .bubble {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 12px 14px; box-shadow: 0 2px 6px rgba(15,23,42,.03);
+    }
+    .message.user .bubble { background: #e8f0ff; border-color: #cbdcff; }
+    .bubble-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; color: var(--muted-fg); font-size: 12px; }
+    .tag { border-radius: 999px; padding: 2px 8px; background: var(--muted); color: var(--muted-fg); font-size: 11px; }
+    .tag.blue { background: #dbeafe; color: #1d4ed8; }
+    .tag.green { background: #dcfce7; color: #166534; }
+    .tag.amber { background: #fef3c7; color: #92400e; }
+    .progress-card { margin: 0 0 18px 44px; max-width: 900px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+    .progress-title { font-weight: 700; margin-bottom: 10px; }
+    .timeline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .step { display: flex; align-items: center; gap: 8px; color: var(--muted-fg); }
+    .step-num { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--muted); font-size: 11px; }
+    .step.done .step-num { background: var(--accent); color: white; }
+    .step.active .step-num { background: var(--secondary); color: white; }
+    .connector { width: 24px; height: 2px; background: var(--border); }
+    .result-card { margin: 0 0 18px 44px; max-width: 900px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+    .result-head { padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    .result-title { font-weight: 700; }
+    .result-body { padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .field { border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: #fcfdff; }
+    .field.full { grid-column: 1 / -1; }
+    .field-label { font-size: 12px; color: var(--muted-fg); margin-bottom: 5px; }
+    .field-value { font-weight: 600; }
+    .subquestions { padding: 0 16px 16px; }
+    .subquestion { display: flex; gap: 8px; padding: 7px 0; border-top: 1px dashed var(--border); }
+    .subquestion:first-child { border-top: 0; }
+    .composer { background: var(--card); border-top: 1px solid var(--border); padding: 16px 24px 20px; }
+    .composer-wrap { max-width: 980px; margin: 0 auto; }
+    .input-box { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: #fff; }
+    textarea { width: 100%; min-height: 54px; border: 0; outline: 0; resize: none; color: var(--fg); background: transparent; }
+    .composer-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+    .hint { color: var(--muted-fg); font-size: 12px; }
+    .send {
+      border: 0; background: var(--secondary); color: white; border-radius: 8px;
+      padding: 9px 18px; font-weight: 700; cursor: pointer;
+    }
+    .send:hover { background: #1d4ed8; }
+    .note { font-size: 11px; color: var(--muted-fg); margin-top: 8px; text-align: center; }
+    @media (max-width: 900px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .result-body { grid-template-columns: 1fr; }
+      .chat-area { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">AI</div>
+        <div>
+          <div class="brand-title">AIOps Agent</div>
+          <div class="brand-sub">智能运维诊断工作台</div>
+        </div>
+      </div>
+      <button class="new-btn">+ 新建诊断会话</button>
+      <div class="section-label">会话列表</div>
+      <div class="sessions">
+        <div class="session active">
+          <div class="session-title">订单接口 500 错误诊断</div>
+          <div class="session-meta">今天 14:32 · aiops</div>
+        </div>
+        <div class="session">
+          <div class="session-title">CPU throttling 是什么？</div>
+          <div class="session-meta">今天 10:18 · chat</div>
+        </div>
+        <div class="session">
+          <div class="session-title">Redis 超时告警排查</div>
+          <div class="session-meta">昨天 17:05 · aiops</div>
+        </div>
+        <div class="session">
+          <div class="session-title">SLO/SLA/SLI 区别</div>
+          <div class="session-meta">昨天 09:42 · chat</div>
+        </div>
+      </div>
+      <div class="sidebar-footer">后端：FastAPI · LangGraph · MongoDB</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="top-title">订单接口 500 错误诊断</div>
+        <div class="top-meta">
+          <span class="status-dot"></span>
+          <span>服务正常</span>
+          <span>·</span>
+          <span>session: 10</span>
+        </div>
+      </header>
+
+      <section class="chat-area">
+        <div class="message user">
+          <div class="avatar">U</div>
+          <div class="bubble">
+            <div class="bubble-head"><span>用户</span><span>14:32</span></div>
+            线上订单接口最近 10 分钟 500 错误增多，请结合历史案例和监控指标定位原因。
+          </div>
+        </div>
+
+        <div class="progress-card">
+          <div class="progress-title">诊断进度</div>
+          <div class="timeline">
+            <div class="step done"><span class="step-num">✓</span><span>问题拆解</span></div>
+            <div class="connector"></div>
+            <div class="step done"><span class="step-num">✓</span><span>知识检索</span></div>
+            <div class="connector"></div>
+            <div class="step active"><span class="step-num">3</span><span>执行排查步骤</span></div>
+            <div class="connector"></div>
+            <div class="step"><span class="step-num">4</span><span>生成诊断结果</span></div>
+          </div>
+        </div>
+
+        <div class="result-card">
+          <div class="result-head">
+            <div class="result-title">子问题拆解结果</div>
+            <span class="tag blue">4 个子问题</span>
+          </div>
+          <div class="subquestions">
+            <div class="subquestion"><span class="tag">q1</span><span>订单服务最近 10 分钟错误率变化如何？</span></div>
+            <div class="subquestion"><span class="tag">q2</span><span>网关层是否出现超时或重试增加？</span></div>
+            <div class="subquestion"><span class="tag">q3</span><span>下游依赖服务是否存在异常？</span></div>
+            <div class="subquestion"><span class="tag">q4</span><span>历史案例中是否有类似 500 increase 场景？</span></div>
+          </div>
+        </div>
+
+        <div class="message">
+          <div class="avatar">AI</div>
+          <div class="bubble">
+            <div class="bubble-head">
+              <span class="tag blue">aiops</span>
+              <span>已检索知识库 · 已执行 3 个排查步骤</span>
+            </div>
+            当前已确认订单接口 5xx 错误率在 14:20 后明显上升，并伴随下游 payment-service 调用延迟升高。继续检查依赖服务状态与近期变更记录。
+          </div>
+        </div>
+
+        <div class="result-card">
+          <div class="result-head">
+            <div class="result-title">最终诊断结果</div>
+            <span class="tag green">已完成</span>
+          </div>
+          <div class="result-body">
+            <div class="field full">
+              <div class="field-label">诊断摘要</div>
+              <div class="field-value">订单接口 500 错误增长可能与 payment-service 延迟升高及下游连接池饱和有关。</div>
+            </div>
+            <div class="field">
+              <div class="field-label">根因</div>
+              <div class="field-value">payment-service 连接池饱和 <span class="tag amber">待进一步验证</span></div>
+            </div>
+            <div class="field">
+              <div class="field-label">证据 ID</div>
+              <div class="field-value">e3, e7, e11</div>
+            </div>
+            <div class="field">
+              <div class="field-label">知识文档 ID</div>
+              <div class="field-value">doc_204, doc_318</div>
+            </div>
+            <div class="field">
+              <div class="field-label">限制说明</div>
+              <div class="field-value">尚未获得发布记录，根因仍存在不确定性。</div>
+            </div>
+            <div class="field full">
+              <div class="field-label">建议</div>
+              <div class="field-value">1. 检查 payment-service 连接池配置；2. 对比故障时间窗口内发布记录；3. 增加连接池指标告警。</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="composer">
+        <div class="composer-wrap">
+          <div class="input-box">
+            <textarea placeholder="输入普通问题或描述一个正在发生的故障，例如：订单接口最近 10 分钟 500 增多，请定位原因。"></textarea>
+            <div class="composer-actions">
+              <div class="hint">支持 SSE 流式输出 · 自动区分普通问答与运维诊断</div>
+              <button class="send">发送诊断请求</button>
+            </div>
+          </div>
+          <div class="note">这不是固定答案演示，而是用于展示前端信息结构的原型图。</div>
+        </div>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>
