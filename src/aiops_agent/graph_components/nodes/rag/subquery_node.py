@@ -2,7 +2,7 @@
 
 import logging
 
-from aiops_agent.agent_components.llm import ModelClient
+from aiops_agent.agent_components.llm import ModelClient, client_for_node
 from aiops_agent.graph_components.utils.rag_utils import (
     _PLACEHOLDER_RE,
     default_subquery,
@@ -128,7 +128,7 @@ async def subquery_node(state: RagInput, model_client: ModelClient) -> dict:
         question=question,
     )
     parsed, error = await ainvoke_structured(
-        model_client, messages, SubqueryOutput,
+        client_for_node(model_client, "subquery"), messages, SubqueryOutput,
         correction="只输出符合 SubqueryOutput schema 的 JSON 对象，不要输出解释。",
     )
 

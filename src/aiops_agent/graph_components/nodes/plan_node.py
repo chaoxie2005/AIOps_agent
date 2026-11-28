@@ -2,7 +2,7 @@
 
 import logging
 
-from aiops_agent.agent_components.llm import ModelClient
+from aiops_agent.agent_components.llm import ModelClient, client_for_node
 from aiops_agent.graph_components.states.state import OverviewState
 from aiops_agent.output_validation import PlanOutput, ainvoke_structured, dump_model, fallback_plan
 from aiops_agent.prompts.load_texts.load_plan_prompt import plan_agent_prompt
@@ -32,7 +32,7 @@ async def plan_node(state: OverviewState, model_client: ModelClient):
         remaining_steps=state.get("max_steps", 8) - len(step_results),
     )
     parsed, error = await ainvoke_structured(
-        model_client, plan_prompt, PlanOutput,
+        client_for_node(model_client, "plan"), plan_prompt, PlanOutput,
         correction="只输出符合 PlanOutput schema 的 JSON 对象，不要输出解释。",
     )
     if error is not None:

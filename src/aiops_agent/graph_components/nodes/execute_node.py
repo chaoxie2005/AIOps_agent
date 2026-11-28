@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from loguru import logger
 
-from aiops_agent.agent_components.llm import ModelClient
+from aiops_agent.agent_components.llm import ModelClient, client_for_node
 from aiops_agent.agent_components.memory.ingestion import TurnIngestion
 from aiops_agent.agent_components.toolkits.query_metrics import query_metrics
 from aiops_agent.agent_components.toolkits.rag_search import make_rag_search_tool
@@ -141,7 +141,7 @@ async def execute_node(
             if limit is not None and model_client.estimate_message_tokens(with_history) <= limit:
                 messages = with_history
         agent = create_agent(
-            model=model_client.model,
+            model=client_for_node(model_client, "execute").model,
             tools=tools,
             system_prompt=messages[0],
             middleware=middleware,

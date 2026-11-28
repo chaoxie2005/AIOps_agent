@@ -6,7 +6,7 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.tools import BaseTool
 
-from aiops_agent.agent_components.llm import ModelClient
+from aiops_agent.agent_components.llm import ModelClient, client_for_node
 from aiops_agent.agent_components.memory.context import recent_messages
 from aiops_agent.agent_components.memory.ingestion import TurnIngestion
 from aiops_agent.agent_components.toolkits.recall_history import HistoryRecall
@@ -56,7 +56,7 @@ async def intent_node(
         prompt = intent_prompt_messages(state["query"])
     history = recent_messages(state, compressed_history=compressed_history)
     parsed, error = await ainvoke_structured(
-        model_client, [prompt[0], *history, *prompt[1:]], IntentOutput,
+        client_for_node(model_client, "intent"), [prompt[0], *history, *prompt[1:]], IntentOutput,
     )
     if error is not None:
         logger.warning("意图识别失败，降级为 chat: %s", error)
@@ -91,7 +91,7 @@ async def chat_node(
         if history_recall is not None:
             tools.append(history_recall.make_tool(messages[0]))
         agent = create_agent(
-            model=model_client.model,
+            model=client_for_node(model_client, "chat").model,
             tools=tools,
             system_prompt=messages[0],
             middleware=[ingestion.tool_middleware("chat")] if ingestion is not None else [],

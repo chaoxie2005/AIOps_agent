@@ -1,6 +1,7 @@
 """从统一环境配置创建对话模型客户端。"""
 
 import os
+from copy import copy
 from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -8,6 +9,25 @@ from urllib.parse import urlsplit
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import BaseMessage
+
+
+NODE_TEMPERATURES = {
+    "intent": 0.0, # 意图识别节点温度
+    "subquery": 0.0, # 子问题拆解节点温度
+    "sdom": 0.0, # 子问题依赖关系改写节点温度
+    "summary": 0.0, # 摘要节点温度
+    "plan": 0.1, # 计划节点温度
+    "replan": 0.1, # 重规划节点温度
+    "execute": 0.1, # 执行节点温度
+    "chat": 0.6, # 对话节点温度
+}
+
+
+def client_for_node(client: "ModelClient", node: str) -> "ModelClient":
+    """为实际模型客户端设置节点温度；保留注入的测试或自定义客户端。"""
+    if isinstance(client, ModelClient):
+        return client.with_temperature(NODE_TEMPERATURES[node])
+    return client
 
 
 class ModelClient:
@@ -76,6 +96,12 @@ class ModelClient:
         # 用 OpenAI 兼容协议创建底层 chat model；真正的 HTTP 请求由它发出。
         self.model = init_chat_model(**kwargs)
         self.input_token_limit = self._resolve_input_token_limit(max_tokens or 1024)
+
+    def with_temperature(self, temperature: float) -> "ModelClient":
+        """返回独立的客户端视图，保留连接与 token 配置。"""
+        client = copy(self)
+        client.model = self.model.model_copy(update={"temperature": temperature})
+        return client
 
     def _resolve_input_token_limit(self, reserved_output_tokens: int) -> int | None:
         """读取模型窗口并扣除为输出预留的预算。

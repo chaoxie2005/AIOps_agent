@@ -2,7 +2,7 @@
 
 import logging
 
-from aiops_agent.agent_components.llm import ModelClient
+from aiops_agent.agent_components.llm import ModelClient, client_for_node
 from aiops_agent.graph_components.states.state import OverviewState
 from aiops_agent.output_validation import ReplanOutput, ainvoke_structured, dump_model, fallback_replan
 from aiops_agent.prompts.load_texts.load_replan_prompt import replan_agent_prompt
@@ -33,7 +33,7 @@ async def replan_node(state: OverviewState, model_client: ModelClient):
         remaining_steps=remaining,
     )
     parsed, error = await ainvoke_structured(
-        model_client, messages, ReplanOutput,
+        client_for_node(model_client, "replan"), messages, ReplanOutput,
         correction="只输出符合 ReplanOutput schema 的 JSON 对象；结束诊断时 steps 必须为空且 result 非 null。",
     )
     if error is not None:

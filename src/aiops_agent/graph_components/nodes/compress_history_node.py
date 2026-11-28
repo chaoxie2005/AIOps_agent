@@ -9,7 +9,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
-from aiops_agent.agent_components.llm import ModelClient
+from aiops_agent.agent_components.llm import ModelClient, client_for_node
 from aiops_agent.agent_components.memory.context import (
     ContextEvaluation, evaluate_history, tool_result_chunks,
 )
@@ -118,6 +118,7 @@ async def _summarize(
     Returns:
         通过长度校验的最终摘要。批次放不下或校验耗尽时返回 None。
     """
+    model_client = client_for_node(model_client, "summary")
     system = SystemMessage(content=f"{_COMPRESS_PROMPT}\n摘要必须在 {_SUMMARY_TOKEN_LIMIT} Token 以内。")
     correction = HumanMessage(content=_TIGHTEN)
     chunks = evaluation.compressible_chunks

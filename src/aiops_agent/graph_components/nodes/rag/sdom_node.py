@@ -2,7 +2,7 @@
 
 import logging
 
-from aiops_agent.agent_components.llm import ModelClient
+from aiops_agent.agent_components.llm import ModelClient, client_for_node
 from aiops_agent.graph_components.utils.rag_utils import _PLACEHOLDER_RE, strip_placeholders
 from aiops_agent.graph_components.states.state import RagState
 from aiops_agent.output_validation import SubqueryRewriteOutput, ainvoke_structured
@@ -56,7 +56,7 @@ async def dependency_optimize_node(state: RagState, model_client: ModelClient) -
         question=current["question"], upstream_context=upstream_context,
     )
     parsed, error = await ainvoke_structured(
-        model_client, messages, SubqueryRewriteOutput,
+        client_for_node(model_client, "sdom"), messages, SubqueryRewriteOutput,
         correction="只输出符合 SubqueryRewriteOutput schema 的 JSON 对象，不要输出解释。",
     )
 
