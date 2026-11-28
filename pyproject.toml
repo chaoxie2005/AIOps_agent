@@ -6,14 +6,28 @@ readme = "README.md"
 authors = [
     { name = "chaoxie", email = "3320841884@qq.com" }
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.11, <3.14"
 dependencies = [
+    "fastapi>=0.162.0",
     "langchain>=1.4.7",
+    "langchain-community>=0.4.2",
     "langchain-core>=1.7.0",
+    "langchain-experimental>=0.4.2",
+    "langchain-openai>=1.7.3",
+    "langchain-text-splitters>=1.1.2",
     "langgraph>=1.2.17",
+    "langgraph-checkpoint-mongodb>=0.5.1",
+    "logger>=1.4",
+    "loguru>=0.7.3",
+    "minio>=7.2.20",
     "pymilvus>=3.0.2",
+    "pypdf>=6.19.0",
     "pytest>=9.1.1",
     "python-dotenv>=1.2.4",
+    "python-multipart>=0.0.33",
+    "requests>=2.34.2",
+    "tencentcloud-sdk-python-cls>=3.0.0",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]

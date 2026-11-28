@@ -3,7 +3,7 @@
 from pathlib import Path
 
 
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts" / "texts"
 
 
 def load_prompt(name: str) -> str:
