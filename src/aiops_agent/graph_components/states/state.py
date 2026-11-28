@@ -162,8 +162,8 @@ class RagState(TypedDict, total=False):
     completed_ids: list[str]
     # 调度器告诉图下一步走哪个节点：optimize=做 SDOM 改写，retrieve=直接检索，aggregate=收尾。
     next_action: Literal["optimize", "retrieve", "aggregate"]
-    # 供人工核对：每个子问题改写后的查询文本，键是子问题 ID。
-    effective_queries: dict[str, str]
+    # 供人工核对：SDOM 改写后的查询文本，键是子问题 ID。
+    rewrites: dict[str, str]  # 子问题 ID 到改写后查询的映射
     retrieval_hits: Annotated[list[RetrievalHit], add]  # 并行检索的原始召回结果
     unique_documents: list[str]  # 聚合去重后的父文档内容列表
     max_subqueries: int  # 允许生成的子查询上限数量

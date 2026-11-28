@@ -1,6 +1,6 @@
-"""RAG 子图的三个节点：子查询拆解、检索、聚合并按父文档去重。
+"""RAG 子图的节点：拆解、调度、依赖优化、检索、记录、聚合。
 
-节点是普通 async 函数，签名保持 (state, 依赖) 或 (state)，便于单测；
+节点是普通 async 函数或普通函数，签名保持 (state, 依赖) 或 (state)，便于单测；
 RagNodes 只负责持有依赖并在图里转发，不承载业务逻辑。
 """
 import logging
@@ -15,7 +15,8 @@ from loguru import logger
 
 from aiops_agent.agent_components.llm import ModelClient
 from aiops_agent.graph_components.states.state import RagInput, RagState, RetrievalHit, SubQueryItem
-from aiops_agent.output_validation import SubqueryOutput, ainvoke_structured
+from aiops_agent.output_validation import SubqueryOutput, SubqueryRewriteOutput, ainvoke_structured
+from aiops_agent.prompts.load_texts.load_sdom_prompt import sdom_prompt
 from aiops_agent.prompts.load_texts.load_subquery_prompt import subquery_agent_prompt
 from aiops_agent.rag_components.retriever.factory import build_retriever_from_env
 from aiops_agent.rag_components.retriever.retriever import MilvusRetriever
@@ -279,6 +280,77 @@ def schedule_node(state: RagState) -> dict:
     }
 
 
+async def dependency_optimize_node(state: RagState, model_client: ModelClient) -> dict:
+    """把带占位符的子问题改写为可独立检索的完整问题（SDOM 节点）。
+
+    工作方式：先根据当前子问题的 depends_on 找到上游子问题，
+    再从检索记录（RetrievalHit类）里找出上游检索到的文档，把这些材料一起交给模型，
+    让模型把 ``#qid#`` 占位符替换成具体实体。
+
+    如果模型调用失败或改写结果仍含占位符，就退化为“直接删掉占位符”，
+    保证流程还能继续检索。
+
+    Args:
+        state: RAG 子图当前状态，至少包含 current_subquery、sub_queries 和 retrieval_hits。
+        model_client: 用于改写问题的模型客户端。
+
+    Returns:
+        状态更新字典，包含改写后的 current_subquery 和改写记录 rewrites。
+    """
+
+    current = state.get("current_subquery")
+    if not current:
+        raise ValueError("dependency_optimize_node 需要 current_subquery，请先经过 schedule_node")
+
+    upstream_blocks: list[str] = [] # 收集上游信息：上游问题原文 + 上游检索到的文档片段。
+    questions = {item["id"]: item for item in state.get("sub_queries", [])} # 子问题 ID 到子问题的映射
+    hits = state.get("retrieval_hits", [])
+    for dep_id in current["depends_on"]:
+        upstream = questions.get(dep_id)
+        if upstream is None:
+            continue
+        # 检索记录里的 subquery 是当时实际用的检索词（上游问题的 effective_query）。
+        passages = [
+            hit["document"].page_content  # 取出文档的正文
+            for hit in hits
+            if hit["subquery"] == upstream["effective_query"]  # 只保留属于上游的那几条
+        ]
+        evidence = "\n".join(passages[:3]) or "（未找到检索证据）" # 只取前 3 篇文档，防止证据太长、占用太多 token
+        upstream_blocks.append(
+            f"上游问题 {dep_id}: {upstream['question']}\n"
+            f"{dep_id} 的检索证据:\n{evidence}"
+        )
+
+    upstream_context = "\n\n".join(upstream_blocks) or "（没有上游信息）"
+    messages = sdom_prompt.format_messages(
+        question=current["question"], upstream_context=upstream_context,
+    )
+    parsed, error = await ainvoke_structured(
+        model_client, messages, SubqueryRewriteOutput,
+        correction="只输出符合 SubqueryRewriteOutput schema 的 JSON 对象，不要输出解释。",
+    )
+
+    if error is None and parsed is not None:
+        rewritten = parsed.rewritten_question.strip()
+        # 模型偶尔会忘记规则，这里再检查一遍：不能残留占位符，也不能是空串。
+        if not rewritten or _PLACEHOLDER_RE.search(rewritten):
+            error = f"改写结果仍包含占位符或为空: {rewritten!r}"
+        else:
+            analysis_logger.info("SDOM 改写成功: %s -> %s", current["question"], rewritten)
+
+    if error is not None:
+        # 降级：直接删掉占位符，虽然语义不如模型补全，但至少能拿去检索。
+        analysis_logger.warning("SDOM 改写失败，降级删除占位符: %s", error)
+        rewritten = _strip_placeholders(current["question"]) or current["question"]
+
+    # 只改 effective_query，保留原始 question 方便后续核对改写前后差异。
+    updated = dict(current)
+    updated["effective_query"] = rewritten
+    rewrites = dict(state.get("rewrites", {}))
+    rewrites[current["id"]] = rewritten
+    return {"current_subquery": updated, "rewrites": rewrites}
+
+
 async def retriever_node(state: RagState, retriever: MilvusRetriever) -> dict:
     """检索当前子问题，并把召回的文档按子问题记录下来。
 
@@ -315,7 +387,7 @@ def record_node(state: RagState) -> dict:
         state: RAG 子图当前状态，至少包含 sub_queries 和 current_subquery。
 
     Returns:
-        状态更新字典，包含更新后的 sub_queries、completed_ids 和 effective_queries。
+        状态更新字典，包含更新后的 sub_queries、completed_ids 和 rewrites。
 
     Raises:
         ValueError: current_subquery 缺失，说明有节点跳过了调度直接调用本节点。
@@ -336,13 +408,13 @@ def record_node(state: RagState) -> dict:
         completed.append(current_id)
 
     # 记录实际用的检索词，方便后续核对 SDOM 改写是否生效。
-    effective_queries = dict(state.get("effective_queries", {}))
-    effective_queries[current_id] = current["effective_query"] # 记录当前子问题
+    rewrites = dict(state.get("rewrites", {}))
+    rewrites[current_id] = current["effective_query"]
 
     return {
         "sub_queries": items,
         "completed_ids": completed,
-        "effective_queries": effective_queries,
+        "rewrites": rewrites,
     }
 
 
@@ -401,6 +473,10 @@ class RagNodes:
         """调度节点包装：挑选下一个要处理的子问题。"""
         return schedule_node(state)
 
+    async def optimize(self, state: RagState) -> dict:
+        """依赖优化节点包装：用上游信息改写当前子问题。"""
+        return await dependency_optimize_node(state, self.model_client)
+
     async def retrieve(self, state: RagState) -> dict:
         """检索节点包装：检索当前子问题。"""
         return await retriever_node(state, self.retriever)
@@ -415,6 +491,6 @@ class RagNodes:
 
 
 __all__ = [
-    "RagNodes", "aggregation_node", "record_node",
-    "retriever_node", "schedule_node", "subquery_node",
+    "RagNodes", "aggregation_node", "dependency_optimize_node",
+    "record_node", "retriever_node", "schedule_node", "subquery_node",
 ]

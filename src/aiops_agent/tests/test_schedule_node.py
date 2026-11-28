@@ -55,4 +55,4 @@ def test_record_marks_done_and_tracks_query():
     result = record_node({"sub_queries": [item], "current_subquery": item, "completed_ids": []})
     assert result["sub_queries"][0]["status"] == "done"
     assert result["completed_ids"] == ["q1"]
-    assert result["effective_queries"]["q1"] == "改写后的查询"
+    assert result["rewrites"]["q1"] == "改写后的查询"
