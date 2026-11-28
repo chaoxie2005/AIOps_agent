@@ -11,7 +11,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from aiops_agent.agent_components.memory.ingestion import TurnIngestion
 from aiops_agent.api.sessions import Sessions
 from aiops_agent.graph_components.graph.main_graph import MainGraph
-from aiops_agent.schema.resquest.chat import ChatRequest
+from aiops_agent.schema.request.chat import ChatRequest
 from aiops_agent.schema.response.chat import ChatResponse
 
 router = APIRouter()

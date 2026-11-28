@@ -225,7 +225,7 @@ class ExecuteNodes:
     @classmethod
     def from_env(cls) -> "ExecuteNodes":
         """复用 RAG 节点的模型和检索器配置，创建执行节点依赖。"""
-        from aiops_agent.graph_components.nodes.rag_nodes import RagNodes
+        from aiops_agent.graph_components.nodes.rag.rag_container import RagNodes
 
         nodes = RagNodes.from_env()
         return cls(nodes.model_client, make_rag_search_tool(nodes.retriever))

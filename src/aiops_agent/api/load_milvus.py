@@ -23,7 +23,7 @@ from aiops_agent.rag_components.retriever.factory import (
     build_milvus_client_from_env,
     get_milvus_collection_name,
 )
-from aiops_agent.schema.resquest.load_milvus import LoadMilvusRequest
+from aiops_agent.schema.request.load_milvus import LoadMilvusRequest
 from aiops_agent.schema.response.load_milvus import LoadMilvusResponse
 
 router = APIRouter()

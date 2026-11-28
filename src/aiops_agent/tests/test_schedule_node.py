@@ -1,6 +1,6 @@
 """调度节点的单元测试：不依赖模型和 Milvus。"""
 
-from aiops_agent.graph_components.nodes.rag_nodes import record_node, schedule_node
+from aiops_agent.graph_components.nodes.rag.schedule_node import record_node, schedule_node
 
 
 def _state(sub_queries, completed_ids=None):

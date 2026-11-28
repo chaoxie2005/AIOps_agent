@@ -4,7 +4,7 @@ import asyncio
 
 from aiops_agent.agent_components.llm import ModelClient
 from aiops_agent.graph_components.graph.main_graph import MainGraph
-from aiops_agent.graph_components.nodes.rag_nodes import RagNodes
+from aiops_agent.graph_components.nodes.rag.rag_container import RagNodes
 
 
 def test_main_graph():

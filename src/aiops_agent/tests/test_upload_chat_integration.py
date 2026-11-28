@@ -8,7 +8,8 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
 
 from aiops_agent.api.app import app
-from aiops_agent.graph_components.nodes import rag_nodes
+from aiops_agent.graph_components.nodes.rag import rag_container
+from aiops_agent.graph_components.nodes.rag.retrieval_node import aggregation_node
 from aiops_agent.rag_components.milvus import AMilvusClient
 from aiops_agent.rag_components.retriever import factory
 from aiops_agent.tests.test_incremental_ingestion import MemoryMilvus, MemoryMinio
@@ -56,8 +57,8 @@ def test_uploaded_document_reaches_chat_with_parent_context(
     monkeypatch.setattr(factory, "AMilvusClient", milvus_factory)
     monkeypatch.setattr(factory, "RerankModel", lambda **kwargs: None)
     monkeypatch.setattr(factory, "load_dotenv", lambda path: None)
-    monkeypatch.setattr(rag_nodes, "load_dotenv", lambda path: None)
-    monkeypatch.setattr(rag_nodes, "ModelClient", Mock())
+    monkeypatch.setattr(rag_container, "load_dotenv", lambda path: None)
+    monkeypatch.setattr(rag_container, "ModelClient", Mock())
     monkeypatch.setattr(upload, "MinioClient", Mock(return_value=minio))
     for key, value in {
         "MILVUS_URL": "http://milvus.example:19530",
@@ -102,7 +103,7 @@ def test_uploaded_document_reaches_chat_with_parent_context(
         )
         assert alternate.status_code == 200 and set(milvus.rows["separate_docs"])
 
-    nodes = rag_nodes.RagNodes.from_env()
+    nodes = rag_container.RagNodes.from_env()
     assert nodes.retriever.collection_name == expected_collection
 
     async def retrieve_context():
@@ -145,6 +146,6 @@ def test_aggregation_uses_legacy_child_text_and_prefers_full_parent_when_availab
         Document(page_content="Legacy without parent metadata"),
     ]
     state = {"retrieval_hits": [{"document": doc, "subquery": "node health"} for doc in documents]}
-    assert asyncio.run(rag_nodes.aggregation_node(state)) == {
+    assert asyncio.run(aggregation_node(state)) == {
         "unique_documents": ["Legacy child", "Full parent text", "Legacy without parent metadata"],
     }

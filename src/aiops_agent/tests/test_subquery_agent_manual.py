@@ -2,7 +2,7 @@
 import asyncio
 
 from aiops_agent.agent_components.llm import ModelClient
-from aiops_agent.graph_components.nodes.rag_nodes import subquery_node
+from aiops_agent.graph_components.nodes.rag.subquery_node import subquery_node
 from aiops_agent.graph_components.states.state import RagState
 
 

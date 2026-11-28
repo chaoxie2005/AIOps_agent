@@ -24,7 +24,7 @@ from aiops_agent.graph_components.graph.rag_subgraph import rag_subgraph
 from aiops_agent.graph_components.nodes.execute_node import ExecuteNodes
 from aiops_agent.graph_components.nodes.execute_step_node import execute_step_node
 from aiops_agent.graph_components.nodes.plan_node import plan_node
-from aiops_agent.graph_components.nodes.rag_nodes import RagNodes
+from aiops_agent.graph_components.nodes.rag.rag_container import RagNodes
 from aiops_agent.graph_components.nodes.replan_node import replan_node
 from aiops_agent.graph_components.router.plan_router import plan_router
 from aiops_agent.graph_components.router.replan_router import replan_router

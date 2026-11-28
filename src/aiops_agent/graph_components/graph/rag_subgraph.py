@@ -2,7 +2,7 @@
 
 from langgraph.graph import END, StateGraph
 
-from aiops_agent.graph_components.nodes.rag_nodes import RagNodes
+from aiops_agent.graph_components.nodes.rag.rag_container import RagNodes
 from aiops_agent.graph_components.router.rag_retriever_router import schedule_router
 from aiops_agent.graph_components.states.state import RagInput, RagOutput, RagState
 

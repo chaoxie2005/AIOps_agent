@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from aiops_agent.schema.resquest.session import CreateSessionRequest
+from aiops_agent.schema.request.session import CreateSessionRequest
 from aiops_agent.schema.response.session import SessionMessage, SessionResponse
 from aiops_agent.agent_components.memory.chat_sessions import ChatSessions
 

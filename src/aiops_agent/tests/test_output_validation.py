@@ -12,7 +12,7 @@ from aiops_agent import output_validation
 from aiops_agent.agent_components.llm import ModelClient
 from aiops_agent.graph_components.graph import main_graph as main
 from aiops_agent.graph_components.nodes import chat_node as chat_module
-from aiops_agent.graph_components.nodes import rag_nodes
+from aiops_agent.graph_components.nodes.rag import subquery_node
 from aiops_agent.graph_components.nodes.chat_node import chat_node, intent_node
 from aiops_agent.graph_components.nodes.plan_node import plan_node
 from aiops_agent.graph_components.nodes.replan_node import replan_node
@@ -178,7 +178,7 @@ def test_replan_truncates_steps_to_remaining_budget():
 def test_subquery_fallback_to_original_question():
     """子查询解析失败时仍执行一次原始问题检索。"""
     model = SimpleNamespace(ainvoke=AsyncMock(return_value=AIMessage(content="not json")), model=object())
-    output = asyncio.run(rag_nodes.subquery_node({"query": "CPU 高", "max_subqueries": 3}, model))
+    output = asyncio.run(subquery_node.subquery_node({"query": "CPU 高", "max_subqueries": 3}, model))
     assert output["unique_subqueries"] == ["CPU 高"]
 
 

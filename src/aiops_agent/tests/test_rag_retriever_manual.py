@@ -3,7 +3,7 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 
-from aiops_agent.graph_components.nodes.rag_nodes import retriever_node
+from aiops_agent.graph_components.nodes.rag.retrieval_node import retriever_node
 from aiops_agent.graph_components.states.state import RagState
 from aiops_agent.rag_components.retriever.factory import build_retriever_from_env
 
