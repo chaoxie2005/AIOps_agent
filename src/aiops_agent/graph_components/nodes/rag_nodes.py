@@ -210,14 +210,140 @@ async def subquery_node(state: RagInput, model_client: ModelClient) -> dict:
     }
 
 
+def schedule_node(state: RagState) -> dict:
+    """挑出下一轮要处理的子问题，并告诉图下一步该走哪个节点。
+
+    遍历 sub_queries，找到第一个还没开始
+    （status=pending）且依赖都已完成的子问题，把它标记为 ready，
+    放进 current_subquery 交给下一个节点处理。
+
+    - 有依赖的子问题 → 下一步走 optimize（SDOM 改写节点）
+    - 没依赖的子问题 → 下一步走 retrieve（直接检索）
+    - 没有可处理的子问题 → 下一步走 aggregate（收尾聚合）
+
+    如果某个子问题等的上游（当前子问题的 depends_on 列表里列出的那些子问题）已经失败并被跳过，它永远等不到依赖，
+    这里会直接把它标记为 skipped，避免整个流程卡在这里。
+
+    Args:
+        state: RAG 子图当前状态，至少包含 sub_queries 和 completed_ids。
+
+    Returns:
+        状态更新字典，包含新的 sub_queries、current_subquery、next_action 和 completed_ids。
+    """
+
+    # 复制一份再改，避免直接修改 LangGraph 传进来的状态对象。
+    items: list[SubQueryItem] = [dict(item) for item in state.get("sub_queries", [])]
+    # 用集合查依赖是否完成，比每次遍历列表快，也更直观。
+    completed: set[str] = set(state.get("completed_ids", []))
+    skipped_now: list[str] = [] # 这轮被跳过的子问题 ID
+
+    # 先找出被跳过的子问题 ID：它们虽然在 completed_ids 里，但没有检索结果，
+    # 依赖它们的子问题不能当“依赖已满足”来处理。
+    skipped_ids = {other["id"] for other in items if other["status"] == "skipped"}
+
+    for item in items:
+        if item["status"] != "pending":
+            continue
+
+        # 只要依赖里有“未完成”或“已跳过”的，就还不能执行。
+        waiting_for = [
+            dep for dep in item["depends_on"]
+            if dep not in completed or dep in skipped_ids
+        ]
+        if waiting_for:
+            # 如果等的上游里有已经跳过的，这个子问题也永远等不到结果，直接跳过它。
+            if any(dep in skipped_ids for dep in waiting_for):
+                # 按 state.py 的约定：跳过时清空依赖和查询，避免留下无效引用。
+                item["status"] = "skipped"
+                item["depends_on"] = []
+                item["effective_query"] = ""
+                skipped_now.append(item["id"])
+            continue
+
+        # 找到一个可以执行的子问题：标记 ready 并交给下一节点。
+        item["status"] = "ready"
+        action = "optimize" if item["depends_on"] else "retrieve"
+        return {
+            "sub_queries": items,
+            "current_subquery": dict(item),
+            "next_action": action,
+            "completed_ids": [*state.get("completed_ids", []), *skipped_now],
+        }
+
+    # 没有可执行的了：可能是全部完成，也可能是剩下的都被跳过了，统一去聚合。
+    return {
+        "sub_queries": items,
+        "current_subquery": None,
+        "next_action": "aggregate",
+        "completed_ids": [*state.get("completed_ids", []), *skipped_now],
+    }
+
+
 async def retriever_node(state: RagState, retriever: MilvusRetriever) -> dict:
-    """处理单个子问题：检索并按子查询记录召回结果。"""
-    query = state["query"]
+    """检索当前子问题，并把召回的文档按子问题记录下来。
+
+    正常流程中，schedule_node 会把要处理的子问题放进 current_subquery，
+    检索词用它里面的 effective_query（有依赖时被 SDOM 改写过的版本）。
+    如果状态里没有 current_subquery，就退回用 state["query"]，保持老的
+    手工测试和单节点调用方式仍然可用。
+
+    Args:
+        state: RAG 子图当前状态。
+        retriever: 实际执行检索的检索器（混合召回 + 重排）。
+
+    Returns:
+        状态更新字典，retrieval_hits 里每一项记录是哪个子问题召回的文档。
+    """
+    current = state.get("current_subquery")
+    # 有调度上下文就用改写后的查询；没有就兼容旧用法，直接用原始查询。
+    query = current["effective_query"] if current else state["query"]
     docs = await retriever.ainvoke(query)
     logger.info(f"检索工具检索的子问题：{query}")
     for doc in docs:
         logger.info(f"检索工具检索的文档：{doc}")
     return {"retrieval_hits": [RetrievalHit(subquery=query, document=doc) for doc in docs]}
+
+
+def record_node(state: RagState) -> dict:
+    """把当前子问题标记为已完成，让调度器可以继续处理下一个。
+
+    检索节点跑完后调用它：把 current_subquery 的状态从 ready 改成 done，
+    并把它的 ID 加入 completed_ids。这样依赖它的后续子问题在下一次
+    schedule 时才会被认为“依赖已就绪”。
+
+    Args:
+        state: RAG 子图当前状态，至少包含 sub_queries 和 current_subquery。
+
+    Returns:
+        状态更新字典，包含更新后的 sub_queries、completed_ids 和 effective_queries。
+
+    Raises:
+        ValueError: current_subquery 缺失，说明有节点跳过了调度直接调用本节点。
+    """
+    current = state.get("current_subquery")
+    if not current:
+        raise ValueError("record_node 需要 current_subquery，请先经过 schedule_node")
+
+    current_id = current["id"]
+    items: list[SubQueryItem] = [dict(item) for item in state.get("sub_queries", [])] # 复制 sub_queries 到 items
+    for item in items:
+        if item["id"] == current_id: # 找到当前子问题
+            item["status"] = "done"
+            break
+
+    completed = list(state.get("completed_ids", []))
+    if current_id not in completed:
+        completed.append(current_id)
+
+    # 记录实际用的检索词，方便后续核对 SDOM 改写是否生效。
+    effective_queries = dict(state.get("effective_queries", {}))
+    effective_queries[current_id] = current["effective_query"] # 记录当前子问题
+
+    return {
+        "sub_queries": items,
+        "completed_ids": completed,
+        "effective_queries": effective_queries,
+    }
 
 
 async def aggregation_node(state: RagState) -> dict:
@@ -271,13 +397,24 @@ class RagNodes:
         """子查询拆解节点。"""
         return await subquery_node(state, self.model_client)
 
+    def schedule(self, state: RagState) -> dict:
+        """调度节点包装：挑选下一个要处理的子问题。"""
+        return schedule_node(state)
+
     async def retrieve(self, state: RagState) -> dict:
-        """检索节点，由 router 以 Send 并行调用。"""
+        """检索节点包装：检索当前子问题。"""
         return await retriever_node(state, self.retriever)
 
+    def record(self, state: RagState) -> dict:
+        """记录节点包装：把当前子问题标记为完成。"""
+        return record_node(state)
+
     async def aggregate(self, state: RagState) -> dict:
-        """聚合去重节点。"""
+        """聚合节点包装：按父文档去重。"""
         return await aggregation_node(state)
 
 
-__all__ = ["RagNodes", "aggregation_node", "retriever_node", "subquery_node"]
+__all__ = [
+    "RagNodes", "aggregation_node", "record_node",
+    "retriever_node", "schedule_node", "subquery_node",
+]
